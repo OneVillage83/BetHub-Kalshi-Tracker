@@ -1,0 +1,255 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum KalshiEnvironment {
+  demo
+  production
+}
+
+enum SyncRunStatus {
+  running
+  success
+  failed
+  stub
+}
+
+enum OutcomeSide {
+  yes
+  no
+  unknown
+}
+
+enum OrderStatus {
+  resting
+  executed
+  canceled
+  unknown
+}
+
+model AppUser {
+  id          String   @id @default(cuid())
+  clerkUserId String   @unique
+  email       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  accounts    KalshiAccount[]
+  notes       BetNote[]
+  syncRuns    SyncRun[]
+}
+
+model KalshiAccount {
+  id          String            @id @default(cuid())
+  appUserId   String
+  label       String            @default("Primary Kalshi")
+  environment KalshiEnvironment @default(demo)
+  keyIdHint   String?
+  readOnly    Boolean           @default(true)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  appUser     AppUser           @relation(fields: [appUserId], references: [id], onDelete: Cascade)
+  fills       Fill[]
+  orders      Order[]
+  positions   Position[]
+  settlements Settlement[]
+  balances    BalanceSnapshot[]
+  syncRuns    SyncRun[]
+
+  @@index([appUserId])
+}
+
+model Market {
+  ticker         String   @id
+  eventTicker    String?
+  title          String?
+  subtitle       String?
+  category       String?
+  status         String?
+  closeTime      DateTime?
+  expirationTime DateTime?
+  settlementTime DateTime?
+  yesAsk         Int?
+  yesBid         Int?
+  noAsk          Int?
+  noBid          Int?
+  lastPrice      Int?
+  volume         Decimal? @db.Decimal(20, 4)
+  liquidity      Int?
+  rawJson        Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  event          Event?   @relation(fields: [eventTicker], references: [ticker])
+  fills          Fill[]
+  orders         Order[]
+  positions      Position[]
+  settlements    Settlement[]
+}
+
+model Event {
+  ticker    String   @id
+  title     String?
+  category  String?
+  status    String?
+  rawJson   Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  markets   Market[]
+}
+
+model Fill {
+  id              String        @id @default(cuid())
+  kalshiAccountId String
+  fillId          String
+  tradeId         String?
+  orderId         String?
+  marketTicker    String
+  eventTicker     String?
+  outcomeSide     OutcomeSide   @default(unknown)
+  action          String?
+  contractCount   Decimal       @db.Decimal(20, 4)
+  priceCents      Int
+  feeCents        Int           @default(0)
+  createdTime     DateTime
+  source          String        @default("portfolio")
+  rawJson         Json
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  account         KalshiAccount @relation(fields: [kalshiAccountId], references: [id], onDelete: Cascade)
+  market          Market        @relation(fields: [marketTicker], references: [ticker])
+
+  @@unique([kalshiAccountId, fillId])
+  @@index([kalshiAccountId, createdTime])
+  @@index([marketTicker])
+}
+
+model Order {
+  id              String        @id @default(cuid())
+  kalshiAccountId String
+  orderId         String
+  marketTicker    String
+  eventTicker     String?
+  outcomeSide     OutcomeSide   @default(unknown)
+  action          String?
+  status          OrderStatus   @default(unknown)
+  originalCount   Decimal?      @db.Decimal(20, 4)
+  remainingCount  Decimal?      @db.Decimal(20, 4)
+  filledCount     Decimal?      @db.Decimal(20, 4)
+  priceCents      Int?
+  createdTime     DateTime?
+  updatedTime     DateTime?
+  source          String        @default("portfolio")
+  rawJson         Json
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  account         KalshiAccount @relation(fields: [kalshiAccountId], references: [id], onDelete: Cascade)
+  market          Market        @relation(fields: [marketTicker], references: [ticker])
+
+  @@unique([kalshiAccountId, orderId])
+  @@index([kalshiAccountId, updatedTime])
+  @@index([marketTicker])
+}
+
+model Position {
+  id                 String        @id @default(cuid())
+  kalshiAccountId    String
+  marketTicker       String
+  eventTicker        String?
+  positionContracts  Decimal       @default(0) @db.Decimal(20, 4)
+  totalTraded        Decimal       @default(0) @db.Decimal(20, 4)
+  averagePriceCents  Int?
+  markPriceCents     Int?
+  exposureCents      Int?
+  realizedPnlCents   Int           @default(0)
+  unrealizedPnlCents Int?
+  feesPaidCents      Int           @default(0)
+  rawJson            Json
+  syncedAt           DateTime      @default(now())
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  account            KalshiAccount @relation(fields: [kalshiAccountId], references: [id], onDelete: Cascade)
+  market             Market        @relation(fields: [marketTicker], references: [ticker])
+
+  @@unique([kalshiAccountId, marketTicker])
+  @@index([kalshiAccountId, syncedAt])
+}
+
+model Settlement {
+  id               String        @id @default(cuid())
+  kalshiAccountId  String
+  marketTicker     String
+  eventTicker      String?
+  settledTime      DateTime?
+  realizedPnlCents Int?
+  revenueCents     Int?
+  feeCents         Int?
+  rawJson          Json
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  account          KalshiAccount @relation(fields: [kalshiAccountId], references: [id], onDelete: Cascade)
+  market           Market        @relation(fields: [marketTicker], references: [ticker])
+
+  @@index([kalshiAccountId, settledTime])
+  @@index([marketTicker])
+}
+
+model BalanceSnapshot {
+  id                  String        @id @default(cuid())
+  kalshiAccountId     String
+  cashBalanceCents    Int?
+  portfolioValueCents Int?
+  rawJson             Json
+  capturedAt          DateTime      @default(now())
+
+  account             KalshiAccount @relation(fields: [kalshiAccountId], references: [id], onDelete: Cascade)
+
+  @@index([kalshiAccountId, capturedAt])
+}
+
+model BetNote {
+  id           String   @id @default(cuid())
+  appUserId    String
+  marketTicker String?
+  fillId       String?
+  title        String?
+  thesis       String?
+  tags         String[] @default([])
+  mistakeType  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  appUser      AppUser  @relation(fields: [appUserId], references: [id], onDelete: Cascade)
+
+  @@index([appUserId, updatedAt])
+  @@index([marketTicker])
+}
+
+model SyncRun {
+  id              String         @id @default(cuid())
+  appUserId       String
+  kalshiAccountId String?
+  status          SyncRunStatus  @default(running)
+  kind            String         @default("backfill")
+  source          String         @default("api")
+  startedAt       DateTime       @default(now())
+  completedAt     DateTime?
+  errorMessage    String?
+  stats           Json?
+
+  appUser         AppUser        @relation(fields: [appUserId], references: [id], onDelete: Cascade)
+  account         KalshiAccount? @relation(fields: [kalshiAccountId], references: [id], onDelete: SetNull)
+
+  @@index([appUserId, startedAt])
+  @@index([kalshiAccountId, startedAt])
+}

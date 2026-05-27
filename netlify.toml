@@ -1,0 +1,16 @@
+[build]
+  command = "pnpm db:generate && pnpm --filter @kalshi-tracker/web build"
+  publish = "apps/web/.next"
+
+[build.environment]
+  NODE_VERSION = "22"
+  PNPM_VERSION = "9.15.0"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+  external_node_modules = ["@prisma/client", ".prisma/client"]
+  included_files = ["prisma/schema.prisma"]
+
+[functions."sync-scheduled"]
+  schedule = "@hourly"

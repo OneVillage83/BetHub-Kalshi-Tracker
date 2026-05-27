@@ -1,0 +1,23 @@
+{
+  "name": "@kalshi-tracker/api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "build": "tsc",
+    "lint": "echo \"add eslint\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cors": "latest",
+    "@prisma/client": "latest",
+    "fastify": "latest",
+    "tsx": "latest",
+    "typescript": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest"
+  }
+}

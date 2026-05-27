@@ -1,0 +1,22 @@
+{
+  "name": "@kalshi-tracker/sync-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "backfill": "tsx src/backfill.ts",
+    "dev": "tsx watch src/backfill.ts",
+    "lint": "echo \"add eslint\"",
+    "typecheck": "tsc --noEmit",
+    "test": "echo \"no worker tests yet\""
+  },
+  "dependencies": {
+    "@kalshi-tracker/kalshi-client": "workspace:*",
+    "@kalshi-tracker/db": "workspace:*",
+    "@prisma/client": "latest",
+    "tsx": "latest",
+    "typescript": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest"
+  }
+}

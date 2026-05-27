@@ -1,0 +1,28 @@
+{
+  "name": "kalshi-bet-tracker",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "dev": "pnpm --filter @kalshi-tracker/web dev",
+    "dev:web": "pnpm --filter @kalshi-tracker/web dev",
+    "dev:api": "pnpm --filter @kalshi-tracker/api dev",
+    "build": "pnpm --filter @kalshi-tracker/web build",
+    "sync:backfill": "pnpm --filter @kalshi-tracker/sync-worker backfill",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "db:studio": "prisma studio",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test"
+  },
+  "dependencies": {
+    "@netlify/functions": "latest"
+  },
+  "devDependencies": {
+    "@prisma/client": "latest",
+    "prisma": "latest",
+    "typescript": "latest",
+    "vitest": "latest"
+  }
+}
