@@ -24,7 +24,6 @@ See `docs/03-kalshi-api-integration.md` for endpoint details and implementation 
 - Database: Prisma Postgres via Prisma ORM 7
 - Hosted database config: Netlify must provide `DATABASE_URL` for builds/functions/runtime
 - Scheduled sync: hourly Netlify Scheduled Function polling due per-user accounts
-- Worker package: retained for future long-running Kalshi backfill/live sync
 - Deployment: Netlify plus hosted Prisma Postgres
 
 ## Local commands
@@ -57,9 +56,7 @@ On Netlify, deployments run `pnpm db:generate && pnpm db:migrate:deploy && pnpm 
 ```txt
 kalshi-bet-tracker/
   apps/web/                 # Next.js dashboard
-  apps/api/                 # Legacy/local Fastify health shim
   netlify/functions/        # Netlify scheduled sync
-  workers/sync-worker/      # Backfill and periodic sync jobs
   packages/kalshi-client/   # Signed Kalshi REST/WebSocket client
   packages/db/              # Shared Prisma/db helpers
   prisma/schema.prisma      # Database model

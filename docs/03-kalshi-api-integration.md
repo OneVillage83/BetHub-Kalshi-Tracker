@@ -13,21 +13,12 @@
 
 ## Base URLs
 
-Use demo first:
-
-```txt
-https://external-api.demo.kalshi.co/trade-api/v2
-wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2
-```
-
 Production:
 
 ```txt
 https://external-api.kalshi.com/trade-api/v2
 wss://external-api-ws.kalshi.com/trade-api/ws/v2
 ```
-
-Confirm exact production WebSocket URL during implementation.
 
 ## Auth
 
@@ -44,7 +35,7 @@ Signature should be generated using the Kalshi-documented method: timestamp + HT
 Private key handling:
 
 - Never put private key in frontend code.
-- In v1, load private key from file path on backend/worker.
+- In v1, load private key from file path or encrypted storage on the backend.
 - Add encrypted DB credential storage later if needed.
 - Keep `READ_ONLY_MODE=true`.
 

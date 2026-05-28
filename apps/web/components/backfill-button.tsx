@@ -48,7 +48,7 @@ export function BackfillButton() {
       const latestStatus = payload.data?.status;
 
       if (latestStatus === "success" && stats) {
-        setMessage(`Backfill completed. Imported ${stats.fills + stats.historicalFills} fills, ${stats.orders + stats.historicalOrders} orders, ${stats.positions} positions, and ${stats.settlements} settlements.`);
+        setMessage(`Backfill completed. Imported ${stats.fills + stats.historicalFills} fills, ${stats.orders + stats.historicalOrders} orders, ${stats.positions + (stats.eventPositions ?? 0)} positions, and ${stats.settlements} settlements.`);
       } else if (latestStatus === "running" || payload.data?.continuationRequired) {
         keepPolling = true;
         setMessage("Backfill is still running...");
@@ -123,7 +123,7 @@ export function BackfillButton() {
   const percent = progress?.percent ?? (running ? 3 : 0);
   const counts = progress?.counts ?? syncStatus?.stats ?? emptyCounts();
   const isTerminal = syncStatus ? isTerminalStatus(syncStatus) : false;
-  const buttonLabel = syncStatus?.timedOut || syncStatus?.canResume ? "Resume backfill" : "Start backfill";
+  const buttonLabel = syncStatus?.canResume ? "Resume backfill" : "Start backfill";
 
   return (
     <div className="space-y-4">
@@ -149,7 +149,7 @@ export function BackfillButton() {
           <div className="grid gap-2 text-xs text-slate-400 sm:grid-cols-2">
             <Stat label="Fills" value={counts.fills + counts.historicalFills} />
             <Stat label="Orders" value={counts.orders + counts.historicalOrders} />
-            <Stat label="Positions" value={counts.positions} />
+            <Stat label="Positions" value={counts.positions + counts.eventPositions} />
             <Stat label="Settlements" value={counts.settlements} />
           </div>
           {progress?.warnings.length ? <p className="text-xs text-amber-300">{progress.warnings[0]}</p> : null}
@@ -170,7 +170,7 @@ function terminalMessage(status: SyncStatus) {
   if (status.lastStatus === "success") return "Backfill completed.";
   if (status.lastStatus === "failed") return "Backfill failed. Check the deployment logs and try again.";
   if (status.lastStatus === "stub") return "Kalshi credentials are required before backfill.";
-  if (status.timedOut) return "Backfill may have timed out; resume or try again.";
+  if (status.timedOut) return "Backfill may have timed out; try again.";
   return "Backfill is still running...";
 }
 
@@ -191,6 +191,7 @@ function emptyCounts() {
     orders: 0,
     historicalOrders: 0,
     positions: 0,
+    eventPositions: 0,
     settlements: 0,
     markets: 0,
     events: 0,

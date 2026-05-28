@@ -1,15 +1,17 @@
 import { getOrCreatePrimaryAccount, getPrimaryAccount, getPrisma, normalizeEmail, ownerEmailsFromEnv } from "@kalshi-tracker/db";
 import { KalshiRestClient, resolvePrivateKey, type KalshiClientConfig } from "@kalshi-tracker/kalshi-client";
-import { kalshiApiBaseUrl, kalshiEnvironment, keyIdHint } from "../env";
+import { kalshiApiBaseUrl, keyIdHint } from "../env";
 import type { AuthenticatedAppUser } from "../auth";
 import { decryptSecret, encryptSecret, EncryptionConfigurationError, isEncryptionConfigured } from "./secrets";
+
+const KALSHI_PRODUCTION_ENVIRONMENT = "production" as const;
 
 export type KalshiCredentialSource = "per_user" | "legacy_netlify" | "missing";
 
 export type KalshiCredentialStatus = {
   configured: boolean;
   credentialSource: KalshiCredentialSource;
-  environment: "demo" | "production";
+  environment: typeof KALSHI_PRODUCTION_ENVIRONMENT;
   keyIdHint: string | null;
   configuredAt: string | null;
   syncEnabled: boolean;
@@ -20,7 +22,6 @@ export type KalshiCredentialStatus = {
 };
 
 export type KalshiCredentialInput = {
-  environment: "demo" | "production";
   accessKeyId: string;
   privateKeyPem?: string | null;
   privateKeyBase64?: string | null;
@@ -63,7 +64,7 @@ export async function getKalshiCredentialStatus(
   return {
     configured: hasStoredCredentials || canUseGlobalFallback,
     credentialSource: credentialSourceFor(hasStoredCredentials, legacyNetlifyKeyAvailable),
-    environment: account?.environment ?? kalshiEnvironment(),
+    environment: KALSHI_PRODUCTION_ENVIRONMENT,
     keyIdHint: hasStoredCredentials ? (account?.keyIdHint ?? null) : legacyNetlifyKeyAvailable ? keyIdHint() : null,
     configuredAt: account?.credentialsConfiguredAt?.toISOString() ?? null,
     syncEnabled: account?.syncEnabled ?? true,
@@ -82,7 +83,7 @@ export async function saveKalshiCredentials(appUserId: string, input: KalshiCred
   if (!privateKeyPem) throw new Error("Kalshi private key is required.");
 
   const client = new KalshiRestClient({
-    baseUrl: kalshiApiBaseUrl(input.environment),
+    baseUrl: kalshiApiBaseUrl(),
     accessKeyId,
     privateKeyPem,
   });
@@ -90,14 +91,14 @@ export async function saveKalshiCredentials(appUserId: string, input: KalshiCred
 
   const account = await getOrCreatePrimaryAccount({
     appUserId,
-    environment: input.environment,
+    environment: KALSHI_PRODUCTION_ENVIRONMENT,
     keyIdHint: maskKeyId(accessKeyId),
   });
 
   await getPrisma().kalshiAccount.update({
     where: { id: account.id },
     data: {
-      environment: input.environment,
+      environment: KALSHI_PRODUCTION_ENVIRONMENT,
       keyIdHint: maskKeyId(accessKeyId),
       accessKeyIdEncrypted: encryptSecret(accessKeyId),
       privateKeyPemEncrypted: encryptSecret(privateKeyPem),
@@ -141,8 +142,7 @@ export async function adoptLegacyNetlifyCredentials(appUser: AuthenticatedAppUse
   const accessKeyId = process.env.KALSHI_ACCESS_KEY_ID?.trim();
   if (!accessKeyId) throw new Error("Netlify-stored Kalshi key ID is missing.");
 
-  const environment = kalshiEnvironment();
-  const config = globalCredentialConfig(environment);
+  const config = globalCredentialConfig();
   const privateKeyPem = (await resolvePrivateKey(config)).trim();
   if (!privateKeyPem) throw new Error("Netlify-stored Kalshi private key is missing.");
 
@@ -155,14 +155,14 @@ export async function adoptLegacyNetlifyCredentials(appUser: AuthenticatedAppUse
 
   const account = await getOrCreatePrimaryAccount({
     appUserId: appUser.id,
-    environment,
+    environment: KALSHI_PRODUCTION_ENVIRONMENT,
     keyIdHint: maskKeyId(accessKeyId),
   });
 
   await getPrisma().kalshiAccount.update({
     where: { id: account.id },
     data: {
-      environment,
+      environment: KALSHI_PRODUCTION_ENVIRONMENT,
       keyIdHint: maskKeyId(accessKeyId),
       accessKeyIdEncrypted: encryptSecret(accessKeyId),
       privateKeyPemEncrypted: encryptSecret(privateKeyPem),
@@ -178,7 +178,7 @@ export async function adoptLegacyNetlifyCredentials(appUser: AuthenticatedAppUse
 export async function buildKalshiClientForAppUser(appUser: AuthenticatedAppUser): Promise<{ client: KalshiRestClient; accountId: string }> {
   const account = await getOrCreatePrimaryAccount({
     appUserId: appUser.id,
-    environment: kalshiEnvironment(),
+    environment: KALSHI_PRODUCTION_ENVIRONMENT,
     keyIdHint: null,
   });
 
@@ -186,7 +186,7 @@ export async function buildKalshiClientForAppUser(appUser: AuthenticatedAppUser)
     return {
       accountId: account.id,
       client: new KalshiRestClient({
-        baseUrl: kalshiApiBaseUrl(account.environment),
+        baseUrl: kalshiApiBaseUrl(),
         accessKeyId: decryptSecret(account.accessKeyIdEncrypted),
         privateKeyPem: decryptSecret(account.privateKeyPemEncrypted),
       }),
@@ -196,16 +196,16 @@ export async function buildKalshiClientForAppUser(appUser: AuthenticatedAppUser)
   if (appUser.role === "owner" && globalCredentialFallbackEnabled() && hasGlobalKalshiCredentials()) {
     return {
       accountId: account.id,
-      client: new KalshiRestClient(globalCredentialConfig(account.environment)),
+      client: new KalshiRestClient(globalCredentialConfig()),
     };
   }
 
   throw new EncryptionConfigurationError("Kalshi credentials are not configured for this user.");
 }
 
-export function globalCredentialConfig(environment: "demo" | "production" = kalshiEnvironment()): KalshiClientConfig {
+export function globalCredentialConfig(): KalshiClientConfig {
   return {
-    baseUrl: process.env.KALSHI_API_BASE_URL ?? kalshiApiBaseUrl(environment),
+    baseUrl: process.env.KALSHI_API_BASE_URL ?? kalshiApiBaseUrl(),
     accessKeyId: process.env.KALSHI_ACCESS_KEY_ID ?? "",
     privateKeyBase64: process.env.KALSHI_PRIVATE_KEY_BASE64,
     privateKeyPem: process.env.KALSHI_PRIVATE_KEY_PEM,

@@ -28,7 +28,7 @@ export default async function PositionsPage() {
           { key: "market", header: "Market", render: (row) => row.marketTitle },
           { key: "category", header: "Category", render: (row) => row.category },
           { key: "contracts", header: "Contracts", render: (row) => row.positionContracts },
-          { key: "avg", header: "Avg", render: (row) => formatCents(row.averagePriceCents) },
+          { key: "avg", header: "Cost / Avg", render: (row) => formatCents(row.positionType === "event" ? row.totalCostCents : row.averagePriceCents) },
           { key: "mark", header: "Mark", render: (row) => formatCents(row.markPriceCents) },
           { key: "exposure", header: "Exposure", render: (row) => formatCents(row.exposureCents) },
           { key: "pnl", header: "P/L", render: (row) => formatCents((row.unrealizedPnlCents ?? 0) + row.realizedPnlCents, { signed: true }) },

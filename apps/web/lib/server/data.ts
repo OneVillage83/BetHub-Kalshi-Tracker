@@ -1,7 +1,13 @@
 import { getPrisma, decimalToString } from "@kalshi-tracker/db";
 import { STUB_REASON_AWAITING_KALSHI, STUB_REASON_LIVE_SYNC } from "../env";
 import { getKalshiCredentialStatus } from "./kalshi-credentials";
-import { isBackfillProgressStale, type BackfillCounts, type BackfillProgress, type BackfillProgressStage } from "./backfill";
+import {
+  isBackfillProgressStale,
+  reconcileRecoverableBackfillRuns,
+  type BackfillCounts,
+  type BackfillProgress,
+  type BackfillProgressStage,
+} from "./backfill";
 
 type SourceState = {
   source: "db" | "stub";
@@ -10,6 +16,8 @@ type SourceState = {
 
 export type DashboardSummary = {
   bankrollCents: number;
+  cashBalanceCents: number;
+  portfolioValueCents: number;
   realizedPnlCents: number;
   openExposureCents: number;
   winRate: number;
@@ -34,11 +42,14 @@ export type FillRow = {
 
 export type PositionRow = {
   id: string;
+  positionType: "event" | "market";
   marketTicker: string;
+  eventTicker: string | null;
   marketTitle: string;
   category: string;
   outcomeSide: string;
   positionContracts: string;
+  totalCostCents: number | null;
   averagePriceCents: number | null;
   markPriceCents: number | null;
   exposureCents: number | null;
@@ -101,6 +112,8 @@ export async function getDashboardSummary(appUserId: string): Promise<{ data: Da
   const accountIds = await accountIdsFor(appUserId);
   const zero: DashboardSummary = {
     bankrollCents: 0,
+    cashBalanceCents: 0,
+    portfolioValueCents: 0,
     realizedPnlCents: 0,
     openExposureCents: 0,
     winRate: 0,
@@ -112,7 +125,7 @@ export async function getDashboardSummary(appUserId: string): Promise<{ data: Da
   const meta = await sourceState(appUserId);
   if (accountIds.length === 0) return { data: zero, meta };
 
-  const [latestBalance, balances, positions, settlements] = await Promise.all([
+  const [latestBalance, balances, positions, eventPositions, settlements] = await Promise.all([
     getPrisma().balanceSnapshot.findFirst({
       where: { kalshiAccountId: { in: accountIds } },
       orderBy: { capturedAt: "desc" },
@@ -125,29 +138,63 @@ export async function getDashboardSummary(appUserId: string): Promise<{ data: Da
     getPrisma().position.findMany({
       where: { kalshiAccountId: { in: accountIds } },
     }),
+    getPrisma().eventPosition.findMany({
+      where: { kalshiAccountId: { in: accountIds } },
+    }),
     getPrisma().settlement.findMany({
       where: { kalshiAccountId: { in: accountIds } },
     }),
   ]);
 
-  const bankrollCents = (latestBalance?.cashBalanceCents ?? 0) + (latestBalance?.portfolioValueCents ?? 0);
-  const winningSettlements = settlements.filter((settlement) => (settlement.realizedPnlCents ?? 0) > 0).length;
-  const settledWithPnl = settlements.filter((settlement) => settlement.realizedPnlCents != null).length;
+  return {
+    data: buildDashboardSummary({
+      latestBalance,
+      balances,
+      positions,
+      eventPositions,
+      settlements,
+    }),
+    meta,
+  };
+}
+
+export function buildDashboardSummary(input: {
+  latestBalance: { cashBalanceCents: number | null; portfolioValueCents: number | null } | null;
+  balances: Array<{ capturedAt: Date; cashBalanceCents: number | null; portfolioValueCents: number | null }>;
+  positions: Array<{
+    positionContracts: unknown;
+    realizedPnlCents: number;
+    feesPaidCents: number;
+  }>;
+  eventPositions: Array<{
+    totalCostShares: unknown;
+    eventExposureCents: number | null;
+    realizedPnlCents: number;
+    feesPaidCents: number;
+  }>;
+  settlements: Array<{ realizedPnlCents: number | null }>;
+}): DashboardSummary {
+  const cashBalanceCents = input.latestBalance?.cashBalanceCents ?? 0;
+  const portfolioValueCents = input.latestBalance?.portfolioValueCents ?? 0;
+  const activeEventPositions = input.eventPositions.filter((position) => Number(position.totalCostShares) !== 0 || (position.eventExposureCents ?? 0) !== 0);
+  const activeMarketPositions = input.positions.filter((position) => Number(position.positionContracts) !== 0);
+  const pnlSource = activeEventPositions.length > 0 ? activeEventPositions : input.positions;
+  const winningSettlements = input.settlements.filter((settlement) => (settlement.realizedPnlCents ?? 0) > 0).length;
+  const settledWithPnl = input.settlements.filter((settlement) => settlement.realizedPnlCents != null).length;
 
   return {
-    data: {
-      bankrollCents,
-      realizedPnlCents: positions.reduce((sum, position) => sum + position.realizedPnlCents, 0),
-      openExposureCents: positions.reduce((sum, position) => sum + (position.exposureCents ?? 0), 0),
-      winRate: settledWithPnl === 0 ? 0 : winningSettlements / settledWithPnl,
-      feesPaidCents: positions.reduce((sum, position) => sum + position.feesPaidCents, 0),
-      activePositions: positions.filter((position) => Number(position.positionContracts) !== 0).length,
-      equity: balances.map((balance) => ({
-        date: balance.capturedAt.toISOString(),
-        valueCents: (balance.cashBalanceCents ?? 0) + (balance.portfolioValueCents ?? 0),
-      })),
-    },
-    meta,
+    bankrollCents: cashBalanceCents + portfolioValueCents,
+    cashBalanceCents,
+    portfolioValueCents,
+    realizedPnlCents: pnlSource.reduce((sum, position) => sum + position.realizedPnlCents, 0),
+    openExposureCents: portfolioValueCents,
+    winRate: settledWithPnl === 0 ? 0 : winningSettlements / settledWithPnl,
+    feesPaidCents: pnlSource.reduce((sum, position) => sum + position.feesPaidCents, 0),
+    activePositions: activeEventPositions.length > 0 ? activeEventPositions.length : activeMarketPositions.length,
+    equity: input.balances.map((balance) => ({
+      date: balance.capturedAt.toISOString(),
+      valueCents: (balance.cashBalanceCents ?? 0) + (balance.portfolioValueCents ?? 0),
+    })),
   };
 }
 
@@ -186,20 +233,57 @@ export async function getPositions(appUserId: string): Promise<{ data: PositionR
   const meta = await sourceState(appUserId);
   if (accountIds.length === 0) return { data: [], meta };
 
-  const positions = await getPrisma().position.findMany({
-    where: { kalshiAccountId: { in: accountIds } },
-    include: { market: true },
-    orderBy: { updatedAt: "desc" },
-  });
+  const [positions, eventPositions] = await Promise.all([
+    getPrisma().position.findMany({
+      where: { kalshiAccountId: { in: accountIds } },
+      include: { market: true },
+      orderBy: { updatedAt: "desc" },
+    }),
+    getPrisma().eventPosition.findMany({
+      where: { kalshiAccountId: { in: accountIds } },
+      include: { event: true },
+      orderBy: { updatedAt: "desc" },
+    }),
+  ]);
+
+  const eventRows: PositionRow[] = eventPositions
+    .filter((position) => Number(position.totalCostShares) !== 0 || (position.eventExposureCents ?? 0) !== 0)
+    .map((position) => ({
+      id: position.id,
+      positionType: "event",
+      marketTicker: position.eventTicker,
+      eventTicker: position.eventTicker,
+      marketTitle: position.event.title ?? position.eventTicker,
+      category: position.event.category ?? "Uncategorized",
+      outcomeSide: "event",
+      positionContracts: decimalToString(position.totalCostShares) ?? "0",
+      totalCostCents: position.totalCostCents,
+      averagePriceCents: null,
+      markPriceCents: null,
+      exposureCents: position.eventExposureCents,
+      realizedPnlCents: position.realizedPnlCents,
+      unrealizedPnlCents: null,
+      feesPaidCents: position.feesPaidCents,
+    }));
+
+  if (eventRows.length > 0) {
+    return {
+      data: eventRows,
+      meta,
+    };
+  }
 
   return {
     data: positions.map((position) => ({
       id: position.id,
+      positionType: "market",
       marketTicker: position.marketTicker,
+      eventTicker: position.eventTicker,
       marketTitle: position.market.title ?? position.marketTicker,
       category: position.market.category ?? "Uncategorized",
       outcomeSide: Number(position.positionContracts) >= 0 ? "yes" : "no",
       positionContracts: decimalToString(position.positionContracts) ?? "0",
+      totalCostCents: null,
       averagePriceCents: position.averagePriceCents,
       markPriceCents: position.markPriceCents,
       exposureCents: position.exposureCents,
@@ -254,6 +338,8 @@ export async function getCategoryPnl(appUserId: string): Promise<{ data: Categor
 }
 
 export async function getSyncStatus(appUserId: string): Promise<{ data: SyncStatus; meta: SourceState }> {
+  await reconcileRecoverableBackfillRuns(appUserId);
+
   const latest = await getPrisma().syncRun.findFirst({
     where: { appUserId },
     orderBy: { startedAt: "desc" },
@@ -271,7 +357,7 @@ export async function getSyncStatus(appUserId: string): Promise<{ data: SyncStat
   const credentials = await getKalshiCredentialStatus(appUserId);
   const progress = progressFromStats(latest?.stats);
   const timedOut = latest?.status === "running" && isBackfillProgressStale(progress?.updatedAt ?? latest.startedAt.toISOString());
-  const continuationRequired = Boolean(latest?.status === "running" && continuationRequiredFromRun(latest?.stats, latest?.cursor));
+  const continuationRequired = Boolean(latest?.status === "running" && hasResumableCoreContinuationCursor(latest?.cursor));
   const statusMessage = syncStatusMessage({
     status: latest?.status ?? null,
     timedOut,
@@ -290,7 +376,7 @@ export async function getSyncStatus(appUserId: string): Promise<{ data: SyncStat
       progress,
       stats: countsFromStats(latest?.stats),
       timedOut,
-      canResume: timedOut || latest?.status === "failed" || continuationRequired,
+      canResume: continuationRequired,
       continuationRequired,
       statusMessage,
       websocket: "stubbed",
@@ -302,7 +388,7 @@ export async function getSyncStatus(appUserId: string): Promise<{ data: SyncStat
 }
 
 export function syncStatusMessage(params: { status: string | null; timedOut: boolean; continuationRequired: boolean; error: string | null }) {
-  if (params.timedOut) return "Backfill may have timed out; resume or try again.";
+  if (params.timedOut) return "Backfill may have timed out; try again.";
   if (params.status === "success") return "Backfill completed.";
   if (params.status === "failed") return `Backfill failed: ${params.error ?? "Unknown error"}`;
   if (params.status === "stub") return STUB_REASON_AWAITING_KALSHI;
@@ -341,6 +427,7 @@ function countsFromStats(stats: unknown): BackfillCounts | null {
     orders: numberField(counts.orders),
     historicalOrders: numberField(counts.historicalOrders),
     positions: numberField(counts.positions),
+    eventPositions: numberField(counts.eventPositions),
     settlements: numberField(counts.settlements),
     markets: numberField(counts.markets),
     events: numberField(counts.events),
@@ -348,8 +435,9 @@ function countsFromStats(stats: unknown): BackfillCounts | null {
   };
 }
 
-function continuationRequiredFromRun(stats: unknown, cursor: unknown) {
-  return asStatsRecord(stats)?.continuationRequired === true || asStatsRecord(cursor)?.continuationRequired === true;
+function hasResumableCoreContinuationCursor(cursor: unknown) {
+  const row = asStatsRecord(cursor);
+  return row?.continuationRequired === true && row.stage !== "market_metadata";
 }
 
 function asStatsRecord(value: unknown): Record<string, unknown> | null {
@@ -368,6 +456,7 @@ function emptyCounts(): BackfillCounts {
     orders: 0,
     historicalOrders: 0,
     positions: 0,
+    eventPositions: 0,
     settlements: 0,
     markets: 0,
     events: 0,

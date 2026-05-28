@@ -1,5 +1,11 @@
 import { resolvePrivateKey, signKalshiRequest } from "./auth";
-import type { KalshiClientConfig, KalshiPaginatedResponse, KalshiRequestOptions } from "./types";
+import type {
+  KalshiClientConfig,
+  KalshiPaginatedResponse,
+  KalshiPositionsCollections,
+  KalshiPositionsPage,
+  KalshiRequestOptions,
+} from "./types";
 
 export class KalshiRestClient {
   constructor(private readonly config: KalshiClientConfig) {}
@@ -108,8 +114,22 @@ export class KalshiRestClient {
     return this.request({ path: "/portfolio/positions", query });
   }
 
-  getAllPositions(query: Record<string, string | number | boolean | undefined> = {}) {
-    return this.paginate("/portfolio/positions", "market_positions", query);
+  async getAllPositions(query: Record<string, string | number | boolean | undefined> = {}): Promise<KalshiPositionsCollections> {
+    const marketPositions: unknown[] = [];
+    const eventPositions: unknown[] = [];
+    let cursor: string | undefined;
+
+    do {
+      const page = await this.request<KalshiPositionsPage>({
+        path: "/portfolio/positions",
+        query: { limit: 1000, ...query, cursor },
+      });
+      marketPositions.push(...(page.market_positions ?? []));
+      eventPositions.push(...(page.event_positions ?? []));
+      cursor = page.cursor || undefined;
+    } while (cursor);
+
+    return { marketPositions, eventPositions };
   }
 
   getSettlements(query: Record<string, string | number | boolean | undefined> = {}) {

@@ -5,7 +5,6 @@ import type { KalshiCredentialStatus } from "../lib/server/kalshi-credentials";
 
 export function KalshiCredentialsPanel({ initialStatus }: { initialStatus: KalshiCredentialStatus }) {
   const [status, setStatus] = useState(initialStatus);
-  const [environment, setEnvironment] = useState<"demo" | "production">(initialStatus.environment);
   const [accessKeyId, setAccessKeyId] = useState("");
   const [privateKeyPem, setPrivateKeyPem] = useState("");
   const [syncEnabled, setSyncEnabled] = useState(initialStatus.syncEnabled);
@@ -18,7 +17,7 @@ export function KalshiCredentialsPanel({ initialStatus }: { initialStatus: Kalsh
     const response = await fetch("/api/settings/kalshi-credentials", {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ environment, accessKeyId, privateKeyPem, syncEnabled }),
+      body: JSON.stringify({ accessKeyId, privateKeyPem, syncEnabled }),
     });
     const payload = await response.json();
     setSaving(false);
@@ -77,7 +76,7 @@ export function KalshiCredentialsPanel({ initialStatus }: { initialStatus: Kalsh
         <StatusRow label="Status" value={status.configured ? "configured" : "missing"} />
         <StatusRow label="Credential source" value={credentialSourceLabel(status.credentialSource)} />
         <StatusRow label="Key ID hint" value={status.keyIdHint ?? "not set"} />
-        <StatusRow label="Environment" value={status.environment} />
+        <StatusRow label="Kalshi API" value={status.environment} />
         <StatusRow label="Encryption" value={status.encryptionConfigured ? "configured" : "missing APP_ENCRYPTION_KEY"} />
         <StatusRow label="Netlify-stored key" value={status.legacyNetlifyKeyAvailable ? "available" : "not found"} />
       </div>
@@ -100,17 +99,6 @@ export function KalshiCredentialsPanel({ initialStatus }: { initialStatus: Kalsh
       ) : null}
 
       <div className="mt-5 space-y-3">
-        <label className="block text-sm text-slate-400">
-          Kalshi environment
-          <select
-            value={environment}
-            onChange={(event) => setEnvironment(event.target.value === "demo" ? "demo" : "production")}
-            className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-slate-100 outline-none focus:border-blue-500"
-          >
-            <option value="production">Production</option>
-            <option value="demo">Demo</option>
-          </select>
-        </label>
         <Field label="Access key ID" value={accessKeyId} onChange={setAccessKeyId} />
         <label className="block text-sm text-slate-400">
           Private key file

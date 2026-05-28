@@ -29,7 +29,7 @@ Minimum running pieces:
 - Prisma Postgres schema and Prisma 7 config
 - Clerk sign-in/sign-up routes and protected app/API routes
 - Empty dashboard states rendered in the UI with stub metadata until credentials are configured
-- Netlify build and scheduled function stub
+- Netlify build and scheduled function
 - Environment variables documented in `.env.example`
 
 ## Build phase 2 — Kalshi client
@@ -49,10 +49,10 @@ Implement:
 
 ## Build phase 3 — Backfill sync
 
-Implement a worker command:
+Implement the app backfill flow:
 
 ```bash
-pnpm sync:backfill
+POST /api/sync/backfill
 ```
 
 It should:
@@ -82,7 +82,7 @@ Keep a scaffolded boundary for:
 - `user_fills`
 - `user_orders`
 
-Netlify does not run a persistent listener in this scaffold. Add an always-on worker host before enabling real WebSocket consumption.
+Netlify does not run a persistent listener in this app. Add an always-on service before enabling real WebSocket consumption.
 
 ## Build phase 6 — Journal and export
 

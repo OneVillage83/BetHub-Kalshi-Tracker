@@ -6,9 +6,7 @@
   "scripts": {
     "dev": "pnpm --filter @kalshi-tracker/web dev",
     "dev:web": "pnpm --filter @kalshi-tracker/web dev",
-    "dev:api": "pnpm --filter @kalshi-tracker/api dev",
     "build": "pnpm --filter @kalshi-tracker/web build",
-    "sync:backfill": "pnpm --filter @kalshi-tracker/sync-worker backfill",
     "db:generate": "prisma generate",
     "db:migrate:deploy": "node scripts/prisma-migrate-deploy.mjs",
     "db:push": "prisma db push",

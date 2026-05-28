@@ -27,10 +27,11 @@ export default async function HomePage() {
 
   return (
     <AppShell title="Dashboard" subtitle="Private Kalshi portfolio analytics" meta={summary.meta}>
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-7">
         <MetricCard label="Bankroll" value={formatCents(summary.data.bankrollCents)} />
+        <MetricCard label="Cash" value={formatCents(summary.data.cashBalanceCents)} />
         <MetricCard label="Realized P/L" value={formatCents(summary.data.realizedPnlCents, { signed: true })} tone={summary.data.realizedPnlCents >= 0 ? "positive" : "negative"} />
-        <MetricCard label="Open Exposure" value={formatCents(summary.data.openExposureCents)} />
+        <MetricCard label="Open Positions" value={formatCents(summary.data.openExposureCents)} />
         <MetricCard label="Win Rate" value={formatPercent(summary.data.winRate)} />
         <MetricCard label="Fees Paid" value={formatCents(summary.data.feesPaidCents)} />
         <MetricCard label="Active Positions" value={String(summary.data.activePositions)} />
@@ -62,7 +63,7 @@ export default async function HomePage() {
           columns={[
             { key: "market", header: "Market", render: (row) => row.marketTitle },
             { key: "contracts", header: "Contracts", render: (row) => row.positionContracts },
-            { key: "avg", header: "Avg", render: (row) => formatCents(row.averagePriceCents) },
+            { key: "avg", header: "Cost / Avg", render: (row) => formatCents(row.positionType === "event" ? row.totalCostCents : row.averagePriceCents) },
             { key: "mark", header: "Mark", render: (row) => formatCents(row.markPriceCents) },
             { key: "exposure", header: "Exposure", render: (row) => formatCents(row.exposureCents) },
             { key: "pnl", header: "P/L", render: (row) => formatCents((row.unrealizedPnlCents ?? 0) + row.realizedPnlCents, { signed: true }) },

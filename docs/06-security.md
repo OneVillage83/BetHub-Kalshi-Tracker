@@ -17,7 +17,7 @@ Forbidden in v1:
 - Private key must never enter browser JavaScript.
 - Private key must never be committed to git.
 - `.key`, `secrets/`, `.env`, and `.env.local` are ignored.
-- Backend/worker load private key from a path or encrypted secret.
+- Backend code loads private keys from encrypted storage or a server-side path.
 - Show only a masked key ID hint in UI.
 
 ## Data safety
@@ -36,4 +36,3 @@ Forbidden in v1:
 - Backup encryption
 - IP allowlist for self-hosting
 - Export redaction option
-

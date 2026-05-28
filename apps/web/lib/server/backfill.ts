@@ -35,6 +35,7 @@ export type BackfillCounts = {
   orders: number;
   historicalOrders: number;
   positions: number;
+  eventPositions: number;
   settlements: number;
   markets: number;
   events: number;
@@ -58,6 +59,7 @@ export type ImportStats = BackfillCounts & {
   counts: BackfillCounts;
   updatedAt: string;
   continuationRequired?: boolean;
+  coreImportCompleted?: boolean;
 };
 
 type NormalizedFill = {
@@ -86,6 +88,16 @@ type NormalizedPosition = {
   exposureCents: number | null;
   realizedPnlCents: number;
   unrealizedPnlCents: number | null;
+  feesPaidCents: number;
+  rawJson: JsonRecord;
+};
+
+type NormalizedEventPosition = {
+  eventTicker: string;
+  totalCostCents: number | null;
+  totalCostShares: string;
+  eventExposureCents: number | null;
+  realizedPnlCents: number;
   feesPaidCents: number;
   rawJson: JsonRecord;
 };
@@ -198,6 +210,7 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
 
   const prisma = getPrisma();
   await markStaleRunningSyncRunsFailed(appUser.id);
+  await reconcileRecoverableBackfillRuns(appUser.id);
 
   const activeRun = await prisma.syncRun.findFirst({
     where: { appUserId: appUser.id, status: "running" },
@@ -211,7 +224,6 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
 
   const startedAt = Date.now();
   const softBudgetMs = options.softBudgetMs ?? BACKFILL_SOFT_BUDGET_MS;
-  const allowContinuation = options.allowContinuation ?? true;
   const { client, accountId } = await buildKalshiClientForAppUser(appUser);
   const account = await prisma.kalshiAccount.findUniqueOrThrow({ where: { id: accountId } });
   const syncRun = await prisma.syncRun.create({
@@ -259,20 +271,24 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
       ...normalizeOrderCollection(orders, "portfolio", stats),
       ...normalizeOrderCollection(historicalOrders, "historical", stats),
     ];
-    const normalizedPositions = normalizePositionCollection(positions, stats);
+    const normalizedPositions = normalizePositionCollection(positions.marketPositions, stats);
+    const normalizedEventPositions = normalizeEventPositionCollection(positions.eventPositions, stats);
     const normalizedSettlements = normalizeSettlementCollection(settlements, stats);
     const fallbackEventTickers = collectFallbackEventTickers(normalizedFills, normalizedOrders, normalizedPositions, normalizedSettlements);
-    const marketTickers = Array.from(fallbackEventTickers.keys());
 
     stats.fills = normalizedFills.filter((fill) => fill.source === "portfolio").length;
     stats.historicalFills = normalizedFills.filter((fill) => fill.source === "historical").length;
     stats.orders = normalizedOrders.filter((order) => order.source === "portfolio").length;
     stats.historicalOrders = normalizedOrders.filter((order) => order.source === "historical").length;
     stats.positions = normalizedPositions.length;
+    stats.eventPositions = normalizedEventPositions.length;
     stats.settlements = normalizedSettlements.length;
 
     await updateBackfillProgress(prisma, syncRun.id, stats, "database_import");
-    const fallbackEventTickerSet = new Set(Array.from(fallbackEventTickers.values()).filter((ticker): ticker is string => Boolean(ticker)));
+    const fallbackEventTickerSet = new Set([
+      ...Array.from(fallbackEventTickers.values()).filter((ticker): ticker is string => Boolean(ticker)),
+      ...normalizedEventPositions.map((position) => position.eventTicker),
+    ]);
     await ensureEvents(new Map(), fallbackEventTickerSet);
     await ensureMarkets(new Map(), fallbackEventTickers, new Map());
 
@@ -403,6 +419,35 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
         },
       });
     }
+    for (const position of normalizedEventPositions) {
+      await prisma.eventPosition.upsert({
+        where: {
+          kalshiAccountId_eventTicker: {
+            kalshiAccountId: account.id,
+            eventTicker: position.eventTicker,
+          },
+        },
+        create: {
+          kalshiAccountId: account.id,
+          eventTicker: position.eventTicker,
+          totalCostCents: position.totalCostCents,
+          totalCostShares: position.totalCostShares,
+          eventExposureCents: position.eventExposureCents,
+          realizedPnlCents: position.realizedPnlCents,
+          feesPaidCents: position.feesPaidCents,
+          rawJson: position.rawJson as Prisma.InputJsonValue,
+        },
+        update: {
+          totalCostCents: position.totalCostCents,
+          totalCostShares: position.totalCostShares,
+          eventExposureCents: position.eventExposureCents,
+          realizedPnlCents: position.realizedPnlCents,
+          feesPaidCents: position.feesPaidCents,
+          rawJson: position.rawJson as Prisma.InputJsonValue,
+          syncedAt: new Date(),
+        },
+      });
+    }
     for (const settlement of normalizedSettlements) {
       await prisma.settlement.upsert({
         where: {
@@ -433,7 +478,9 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
       });
     }
 
-    const continuationCursor = await enrichOptionalMetadata({
+    stats.coreImportCompleted = true;
+    await saveBackfillStats(prisma, syncRun.id, stats);
+    await enrichOptionalMetadataBestEffort({
       prisma,
       client,
       syncRunId: syncRun.id,
@@ -441,9 +488,7 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
       fallbackEventTickers,
       startedAt,
       softBudgetMs,
-      allowContinuation,
     });
-    if (continuationCursor) return createContinuationResponse(prisma, syncRun.id, stats, continuationCursor);
     return finishBackfillSuccess(prisma, syncRun.id, account.id, stats);
   } catch (error) {
     return failBackfillRun(prisma, syncRun.id, stats, error);
@@ -527,6 +572,99 @@ export function isBackfillProgressStale(updatedAt: string | null | undefined, no
   const timestamp = Date.parse(updatedAt);
   if (!Number.isFinite(timestamp)) return true;
   return now - timestamp > BACKFILL_STALE_MS;
+}
+
+export async function reconcileRecoverableBackfillRuns(appUserId: string) {
+  const prisma = getPrisma();
+  const runs = await prisma.syncRun.findMany({
+    where: {
+      appUserId,
+      status: { in: ["failed", "running"] },
+      kalshiAccountId: { not: null },
+    },
+    orderBy: { startedAt: "desc" },
+    take: 5,
+  });
+
+  for (const run of runs) {
+    if (!isRecoverableCoreImportStats(run.stats)) continue;
+    if (!(await hasSavedCoreImportRows(prisma, run))) continue;
+
+    const stats = importStatsFromJson(run.stats);
+    stats.coreImportCompleted = true;
+    stats.continuationRequired = false;
+    if (run.errorMessage) {
+      pushWarningOnce(stats.warnings, `metadata warning: ${run.errorMessage}`);
+    } else if (asStatsRecord(run.cursor)?.stage === "market_metadata" || stats.stage === "market_metadata") {
+      pushWarningOnce(stats.warnings, "metadata enrichment did not finish after core import; marked complete.");
+    }
+    applyBackfillProgress(stats, "complete");
+
+    const completedAt = run.completedAt ?? new Date();
+    await prisma.syncRun.update({
+      where: { id: run.id },
+      data: {
+        status: "success",
+        completedAt,
+        lockedAt: null,
+        errorMessage: null,
+        cursor: Prisma.JsonNull,
+        stats: stats as unknown as Prisma.InputJsonValue,
+      },
+    });
+
+    if (run.kalshiAccountId) {
+      await prisma.kalshiAccount.update({
+        where: { id: run.kalshiAccountId },
+        data: {
+          lastSyncAt: completedAt,
+          syncCursor: { lastCompletedSyncRunId: run.id, lastCompletedAt: completedAt.toISOString() },
+        },
+      });
+    }
+  }
+}
+
+export function isRecoverableCoreImportStats(stats: unknown) {
+  const row = asStatsRecord(stats);
+  if (!row) return false;
+  if (row.coreImportCompleted === true) return true;
+  const stage = backfillStageFromValue(row.stage);
+  if (stage === "database_import" || stage === "market_metadata" || stage === "complete") return true;
+  const counts = countsFromStatsRecord(row);
+  return numberField(row.percent) >= 94 || counts.balanceSnapshots > 0;
+}
+
+async function hasSavedCoreImportRows(
+  prisma: ReturnType<typeof getPrisma>,
+  run: {
+    id: string;
+    kalshiAccountId: string | null;
+    startedAt: Date;
+    stats: Prisma.JsonValue | null;
+  },
+) {
+  if (!run.kalshiAccountId) return false;
+
+  const counts = countsFromStatsRecord(asStatsRecord(run.stats));
+  const since = run.startedAt;
+  const [balanceSnapshots, fills, orders, positions, eventPositions, settlements] = await Promise.all([
+    prisma.balanceSnapshot.count({ where: { kalshiAccountId: run.kalshiAccountId, capturedAt: { gte: since } } }),
+    prisma.fill.count({ where: { kalshiAccountId: run.kalshiAccountId, updatedAt: { gte: since } } }),
+    prisma.order.count({ where: { kalshiAccountId: run.kalshiAccountId, updatedAt: { gte: since } } }),
+    prisma.position.count({ where: { kalshiAccountId: run.kalshiAccountId, syncedAt: { gte: since } } }),
+    prisma.eventPosition.count({ where: { kalshiAccountId: run.kalshiAccountId, syncedAt: { gte: since } } }),
+    prisma.settlement.count({ where: { kalshiAccountId: run.kalshiAccountId, updatedAt: { gte: since } } }),
+  ]);
+
+  return (
+    balanceSnapshots > 0 &&
+    fills >= counts.fills + counts.historicalFills &&
+    orders >= counts.orders + counts.historicalOrders &&
+    positions >= counts.positions &&
+    eventPositions >= counts.eventPositions &&
+    settlements >= counts.settlements
+  );
 }
 
 async function createMissingCredentialsSyncRun(appUserId: string) {
@@ -647,13 +785,12 @@ async function failBackfillRun(
 
 function runningSyncRunResponse(syncRun: RunningSyncRun) {
   const stats = asStatsRecord(syncRun.stats);
-  const cursor = asStatsRecord(syncRun.cursor);
   return {
     data: {
       id: syncRun.id,
       status: "running",
       completedAt: syncRun.completedAt?.toISOString() ?? null,
-      continuationRequired: cursor?.continuationRequired === true || stats?.continuationRequired === true,
+      continuationRequired: false,
       message: "Backfill is still running...",
       stats,
     },
@@ -701,6 +838,7 @@ function importStatsFromJson(value: unknown): ImportStats {
     counts,
     updatedAt: typeof row?.updatedAt === "string" ? row.updatedAt : new Date().toISOString(),
     continuationRequired: row?.continuationRequired === true,
+    coreImportCompleted: row?.coreImportCompleted === true,
   };
 }
 
@@ -735,6 +873,7 @@ export function emptyBackfillCounts(): BackfillCounts {
     orders: 0,
     historicalOrders: 0,
     positions: 0,
+    eventPositions: 0,
     settlements: 0,
     markets: 0,
     events: 0,
@@ -764,6 +903,7 @@ export function applyBackfillProgress(stats: ImportStats, stage: BackfillProgres
     orders: stats.orders,
     historicalOrders: stats.historicalOrders,
     positions: stats.positions,
+    eventPositions: stats.eventPositions,
     settlements: stats.settlements,
     markets: stats.markets,
     events: stats.events,
@@ -876,6 +1016,21 @@ function normalizePositionCollection(rawPositions: unknown[], stats: ImportStats
   return positions;
 }
 
+function normalizeEventPositionCollection(rawPositions: unknown[], stats: ImportStats) {
+  const positions: NormalizedEventPosition[] = [];
+
+  for (const rawPosition of rawPositions) {
+    const position = normalizeEventPosition(rawPosition);
+    if (position) {
+      positions.push(position);
+    } else {
+      stats.skippedRows += 1;
+    }
+  }
+
+  return positions;
+}
+
 function normalizeOrderCollection(rawOrders: unknown[], source: string, stats: ImportStats) {
   const orders: NormalizedOrder[] = [];
 
@@ -940,6 +1095,22 @@ function normalizePosition(rawPosition: unknown): NormalizedPosition | null {
   };
 }
 
+function normalizeEventPosition(rawPosition: unknown): NormalizedEventPosition | null {
+  const row = asRecord(rawPosition);
+  const eventTicker = text(row, ["event_ticker", "ticker"]);
+  if (!eventTicker) return null;
+
+  return {
+    eventTicker,
+    totalCostCents: centsFromDollarFields(row, ["total_cost_dollars"], ["total_cost"]),
+    totalCostShares: fixedPoint(row, ["total_cost_shares_fp", "total_cost_shares"]),
+    eventExposureCents: centsFromDollarFields(row, ["event_exposure_dollars"], ["event_exposure"]),
+    realizedPnlCents: centsFromDollarFields(row, ["realized_pnl_dollars"], ["realized_pnl"]) ?? 0,
+    feesPaidCents: centsFromDollarFields(row, ["fees_paid_dollars"], ["fees_paid"]) ?? 0,
+    rawJson: row,
+  };
+}
+
 function normalizeSettlementCollection(rawSettlements: unknown[], stats: ImportStats) {
   const settlements: NormalizedSettlement[] = [];
 
@@ -997,6 +1168,26 @@ function collectFallbackEventTickers(
   for (const position of positions) fallbackEventTickers.set(position.marketTicker, position.eventTicker);
   for (const settlement of settlements) fallbackEventTickers.set(settlement.marketTicker, settlement.eventTicker);
   return fallbackEventTickers;
+}
+
+async function enrichOptionalMetadataBestEffort(args: {
+  prisma: ReturnType<typeof getPrisma>;
+  client: KalshiRestClient;
+  syncRunId: string;
+  stats: ImportStats;
+  fallbackEventTickers: Map<string, string | null>;
+  startedAt: number;
+  softBudgetMs: number;
+}) {
+  try {
+    await enrichOptionalMetadata({
+      ...args,
+      allowContinuation: false,
+    });
+  } catch (error) {
+    pushWarningOnce(args.stats.warnings, `metadata enrichment: ${publicBackfillError(error)}`);
+    await saveBackfillStats(args.prisma, args.syncRunId, args.stats);
+  }
 }
 
 async function enrichOptionalMetadata(args: {
@@ -1387,6 +1578,7 @@ function countsFromStatsRecord(row: Record<string, unknown> | null): BackfillCou
     orders: numberField(counts?.orders),
     historicalOrders: numberField(counts?.historicalOrders),
     positions: numberField(counts?.positions),
+    eventPositions: numberField(counts?.eventPositions),
     settlements: numberField(counts?.settlements),
     markets: numberField(counts?.markets),
     events: numberField(counts?.events),

@@ -19,3 +19,14 @@ export type KalshiRequestOptions = {
 export type KalshiPaginatedResponse<TItem, TKey extends string> = {
   cursor?: string;
 } & Record<TKey, TItem[]>;
+
+export type KalshiPositionsPage = {
+  cursor?: string;
+  market_positions?: unknown[];
+  event_positions?: unknown[];
+};
+
+export type KalshiPositionsCollections = {
+  marketPositions: unknown[];
+  eventPositions: unknown[];
+};

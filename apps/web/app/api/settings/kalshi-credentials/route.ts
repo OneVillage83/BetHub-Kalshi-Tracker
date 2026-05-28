@@ -20,7 +20,6 @@ export async function PUT(request: Request) {
   const body = await request.json().catch(() => ({}));
   try {
     const status = await saveKalshiCredentials(appUser.id, {
-      environment: body.environment === "demo" ? "demo" : "production",
       accessKeyId: typeof body.accessKeyId === "string" ? body.accessKeyId : "",
       privateKeyPem: typeof body.privateKeyPem === "string" ? body.privateKeyPem : null,
       privateKeyBase64: typeof body.privateKeyBase64 === "string" ? body.privateKeyBase64 : null,

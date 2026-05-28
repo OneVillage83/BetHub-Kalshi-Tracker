@@ -14,15 +14,9 @@ export function hasKalshiCredentials() {
   );
 }
 
-export function kalshiEnvironment() {
-  return process.env.KALSHI_ENV === "production" ? "production" : "demo";
-}
-
-export function kalshiApiBaseUrl(environment: "demo" | "production" = kalshiEnvironment()) {
+export function kalshiApiBaseUrl() {
   if (process.env.KALSHI_API_BASE_URL) return process.env.KALSHI_API_BASE_URL;
-  return environment === "production"
-    ? "https://external-api.kalshi.com/trade-api/v2"
-    : "https://demo-api.kalshi.co/trade-api/v2";
+  return "https://external-api.kalshi.com/trade-api/v2";
 }
 
 export function keyIdHint() {

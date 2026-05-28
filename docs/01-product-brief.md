@@ -37,6 +37,6 @@ Read-only automated tracker:
 1. User enters Kalshi API key ID and points backend to private key file.
 2. App runs historical backfill.
 3. Dashboard populates with history.
-4. Worker periodically syncs new data.
-5. Future always-on worker streams live fills/orders.
+4. Netlify scheduled sync periodically imports new data.
+5. A future always-on service streams live fills/orders.
 6. User reviews performance by market, category, date, and strategy tags.

@@ -6,10 +6,10 @@
 Browser UI
   -> Next.js web app on Netlify
     -> Clerk auth
-    -> App Router route handlers
+      -> App Router route handlers
       -> Prisma Postgres via Prisma ORM
       -> Kalshi REST client
-      -> Netlify scheduled sync stub
+      -> Netlify scheduled sync
 ```
 
 ## App layers
@@ -22,19 +22,6 @@ Browser UI
 - Journal UI
 - Export UI
 - Sync health indicators
-
-### apps/api
-
-- Legacy/local Fastify health shim
-- Not the primary hosted API surface
-
-### workers/sync-worker
-
-- Backfill job
-- Periodic incremental sync
-- WebSocket consumer
-- Market enrichment job
-- Future always-on worker host if live Kalshi WebSockets are enabled
 
 ### packages/kalshi-client
 
@@ -65,5 +52,5 @@ Start with Netlify:
 - Web and API route handlers in `apps/web`
 - Prisma Postgres for hosted storage
 - Clerk environment variables in Netlify
-- Kalshi keys in Netlify environment variables only
-- Scheduled function stub for periodic sync boundary
+- Per-user encrypted Kalshi credentials, with optional owner adoption of a Netlify-stored production key
+- Scheduled function for periodic sync

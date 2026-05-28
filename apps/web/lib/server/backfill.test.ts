@@ -5,6 +5,7 @@ import {
   buildMissingCredentialsBackfillStats,
   fetchOptionalEventMetadata,
   isBackfillProgressStale,
+  isRecoverableCoreImportStats,
 } from "./backfill";
 
 describe("backfill progress helpers", () => {
@@ -70,5 +71,30 @@ describe("backfill progress helpers", () => {
     expect(calls).toBe(3);
     expect(result.status).toBe("rate_limited");
     if (result.status !== "ok") expect(result.message).toContain("core import continues");
+  });
+
+  it("treats event metadata server errors as non-fatal metadata results", async () => {
+    const result = await fetchOptionalEventMetadata(
+      {
+        getEvent: async () => {
+          throw new Error("Kalshi API 500: server error");
+        },
+      },
+      "KXTEST",
+      [],
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status !== "ok") expect(result.message).toContain("Kalshi API 500");
+  });
+
+  it("identifies failed database-import runs as recoverable candidates", () => {
+    expect(
+      isRecoverableCoreImportStats({
+        stage: "database_import",
+        percent: 94,
+        counts: { balanceSnapshots: 1 },
+      }),
+    ).toBe(true);
   });
 });

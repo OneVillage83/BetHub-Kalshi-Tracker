@@ -154,7 +154,7 @@ export async function getPrimaryAccount(appUserId: string) {
 
 export async function getOrCreatePrimaryAccount(params: {
   appUserId: string;
-  environment?: "demo" | "production";
+  environment?: "production";
   keyIdHint?: string | null;
 }) {
   const existing = await getPrimaryAccount(params.appUserId);
@@ -163,7 +163,7 @@ export async function getOrCreatePrimaryAccount(params: {
   return getPrisma().kalshiAccount.create({
     data: {
       appUserId: params.appUserId,
-      environment: params.environment ?? "demo",
+      environment: params.environment ?? "production",
       keyIdHint: params.keyIdHint ?? null,
       readOnly: true,
     },
