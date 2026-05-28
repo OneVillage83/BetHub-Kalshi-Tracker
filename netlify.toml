@@ -7,6 +7,9 @@
   PNPM_VERSION = "9.15.0"
   PNPM_FLAGS = "--shamefully-hoist"
 
+[context.production.environment]
+  OWNER_EMAILS = "f_rodriguez91@yahoo.com"
+
 [functions]
   directory = "netlify/functions"
   node_bundler = "esbuild"
