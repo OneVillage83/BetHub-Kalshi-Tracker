@@ -1,5 +1,5 @@
 [build]
-  command = "pnpm db:generate && pnpm --filter @kalshi-tracker/web build"
+  command = "pnpm db:generate && pnpm db:migrate:deploy && pnpm --filter @kalshi-tracker/web build"
   publish = "apps/web/.next"
 
 [build.environment]

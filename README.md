@@ -22,6 +22,7 @@ See `docs/03-kalshi-api-integration.md` for endpoint details and implementation 
 - Frontend/API: Next.js App Router + TypeScript + Tailwind + Recharts + lucide-react
 - Auth: Clerk
 - Database: Prisma Postgres via Prisma ORM 7
+- Netlify Database package: `@netlify/database` provides branch-aware Postgres connection strings in Netlify builds/functions
 - Scheduled sync boundary: Netlify Scheduled Functions
 - Worker package: retained for future long-running Kalshi backfill/live sync
 - Deployment: Netlify plus hosted Prisma Postgres
@@ -31,6 +32,7 @@ See `docs/03-kalshi-api-integration.md` for endpoint details and implementation 
 ```bash
 pnpm install
 pnpm db:generate
+pnpm db:migrate:deploy
 pnpm dev
 pnpm test
 pnpm typecheck
@@ -38,6 +40,8 @@ pnpm build
 ```
 
 Without Clerk keys, `/` renders a setup-required state and protected APIs return `401`. Without Kalshi keys, authenticated data APIs return empty DB data with `Stub: awaiting Kalshi credentials` metadata.
+
+On Netlify, deployments run `pnpm db:generate && pnpm db:migrate:deploy && pnpm --filter @kalshi-tracker/web build`. Netlify Database is detected through `@netlify/database`, and Prisma uses the Netlify-provided connection string with local `DATABASE_URL` fallback.
 
 ## Folder layout
 

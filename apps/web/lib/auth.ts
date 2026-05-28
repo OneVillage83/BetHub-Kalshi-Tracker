@@ -1,5 +1,5 @@
 import { auth, currentUser } from "@clerk/nextjs/server";
-import { getOrCreateAppUser } from "@kalshi-tracker/db";
+import { getOrCreateAppUser, isDatabaseConfigurationError } from "@kalshi-tracker/db";
 import { isClerkConfigured } from "./env";
 
 export type AuthenticatedAppUser = {
@@ -26,7 +26,27 @@ export async function getAuthenticatedAppUser(): Promise<AuthenticatedAppUser | 
 }
 
 export async function requireAuthenticatedAppUser() {
-  const appUser = await getAuthenticatedAppUser();
+  let appUser: AuthenticatedAppUser | null;
+  try {
+    appUser = await getAuthenticatedAppUser();
+  } catch (error) {
+    if (isDatabaseConfigurationError(error)) {
+      return {
+        appUser: null,
+        response: Response.json(
+          {
+            error: {
+              message: "Database is not configured for this deployment.",
+              code: "DATABASE_NOT_CONFIGURED",
+            },
+          },
+          { status: 503 },
+        ),
+      };
+    }
+    throw error;
+  }
+
   if (!appUser) {
     return {
       appUser: null,

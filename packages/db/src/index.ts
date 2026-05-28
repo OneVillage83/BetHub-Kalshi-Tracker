@@ -1,17 +1,48 @@
 import { PrismaClient, type Prisma } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { getConnectionString } from "@netlify/database";
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
-export function getPrisma() {
-  if (!globalForPrisma.prisma) {
-    const connectionString = process.env.DATABASE_URL;
-    if (!connectionString) {
-      throw new Error("Missing DATABASE_URL for Prisma client.");
+export class DatabaseConfigurationError extends Error {
+  constructor(message = "Database is not configured.") {
+    super(message);
+    this.name = "DatabaseConfigurationError";
+  }
+}
+
+export function getDatabaseConnectionString() {
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+
+  try {
+    return getConnectionString();
+  } catch {
+    if (process.env.NETLIFY === "true") {
+      throw new DatabaseConfigurationError(
+        "Netlify Database is not available for this deployment. Install @netlify/database and provision the site database.",
+      );
     }
 
+    return "postgresql://kalshi:kalshi@localhost:5432/kalshi_tracker?schema=public";
+  }
+}
+
+export function isDatabaseConfigured() {
+  try {
+    return Boolean(getDatabaseConnectionString());
+  } catch {
+    return false;
+  }
+}
+
+export function isDatabaseConfigurationError(error: unknown) {
+  return error instanceof DatabaseConfigurationError || (error instanceof Error && error.name === "DatabaseConfigurationError");
+}
+
+export function getPrisma() {
+  if (!globalForPrisma.prisma) {
     globalForPrisma.prisma = new PrismaClient({
-      adapter: new PrismaPg({ connectionString }),
+      adapter: new PrismaPg({ connectionString: getDatabaseConnectionString() }),
     });
   }
 
