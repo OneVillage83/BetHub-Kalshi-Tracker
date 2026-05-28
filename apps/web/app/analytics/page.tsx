@@ -18,7 +18,7 @@ export default async function AnalyticsPage() {
   const [summary, categories] = await Promise.all([getDashboardSummary(appUser.id), getCategoryPnl(appUser.id)]);
 
   return (
-    <AppShell title="Analytics" subtitle="Performance by time, category, and bankroll movement" meta={summary.meta}>
+    <AppShell title="General Analytics" subtitle="Performance by time, category, and bankroll movement" meta={summary.meta}>
       <div className="grid gap-4 md:grid-cols-4">
         <MetricCard label="Realized P/L" value={formatCents(summary.data.realizedPnlCents, { signed: true })} tone={summary.data.realizedPnlCents >= 0 ? "positive" : "negative"} />
         <MetricCard label="Win Rate" value={formatPercent(summary.data.winRate)} />

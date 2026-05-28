@@ -5,6 +5,7 @@ import {
   BookOpen,
   Briefcase,
   CheckCircle2,
+  ChevronDown,
   FileDown,
   Grid2X2,
   History,
@@ -14,19 +15,36 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import { UserButton } from "@clerk/nextjs";
 import type { ApiMeta } from "../lib/api-response";
 import { SourceBadge } from "./source-badge";
+
+const analyticsNav = [
+  { href: "/analytics", label: "General Analytics" },
+  { href: "/analytics/sports", label: "Sports Analytics" },
+] as const;
 
 const nav = [
   { href: "/", label: "Dashboard", icon: Grid2X2 },
   { href: "/bet-history", label: "Bet History", icon: History },
   { href: "/positions", label: "Open Positions", icon: Briefcase },
   { href: "/settlements", label: "Settled Bets", icon: CheckCircle2 },
-  { href: "/analytics", label: "Analytics", icon: BarChart3 },
+  { label: "Analytics", icon: BarChart3, children: analyticsNav },
   { href: "/journal", label: "Journal", icon: BookOpen },
   { href: "/exports", label: "Exports", icon: FileDown },
   { href: "/settings", label: "Settings", icon: Settings },
+] as const;
+
+const mobileNav = [
+  { href: "/", label: "Dashboard" },
+  { href: "/bet-history", label: "Bet History" },
+  { href: "/positions", label: "Open Positions" },
+  { href: "/settlements", label: "Settled Bets" },
+  ...analyticsNav,
+  { href: "/journal", label: "Journal" },
+  { href: "/exports", label: "Exports" },
+  { href: "/settings", label: "Settings" },
 ] as const;
 
 export function AppShell({
@@ -41,6 +59,12 @@ export function AppShell({
   meta?: Partial<ApiMeta>;
 }) {
   const pathname = usePathname();
+  const analyticsActive = pathname.startsWith("/analytics");
+  const [analyticsOpen, setAnalyticsOpen] = useState(analyticsActive);
+
+  useEffect(() => {
+    if (analyticsActive) setAnalyticsOpen(true);
+  }, [analyticsActive]);
 
   return (
     <main className="min-h-screen bg-[#060b12] text-slate-100">
@@ -50,18 +74,56 @@ export function AppShell({
           <span>BetHub Tracker</span>
         </Link>
         <nav className="mt-9 space-y-1">
-          {nav.map(({ href, label, icon: Icon }) => {
-            const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
+          {nav.map((item) => {
+            const Icon = item.icon;
+            if ("children" in item) {
+              return (
+                <div key={item.label}>
+                  <button
+                    type="button"
+                    aria-expanded={analyticsOpen}
+                    onClick={() => setAnalyticsOpen((open) => !open)}
+                    className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm ${
+                      analyticsActive ? "bg-blue-600/20 text-blue-200" : "text-slate-400 hover:bg-slate-900 hover:text-slate-100"
+                    }`}
+                  >
+                    <Icon className="h-4 w-4" />
+                    <span className="flex-1">{item.label}</span>
+                    <ChevronDown className={`h-4 w-4 transition-transform ${analyticsOpen ? "rotate-180" : ""}`} />
+                  </button>
+                  {analyticsOpen ? (
+                    <div className="mt-1 space-y-1 pl-7">
+                      {item.children.map((child) => {
+                        const childActive = child.href === "/analytics" ? pathname === child.href : pathname.startsWith(child.href);
+                        return (
+                          <Link
+                            key={child.href}
+                            href={child.href}
+                            className={`block rounded-lg px-3 py-2 text-sm ${
+                              childActive ? "bg-blue-600/15 text-blue-100" : "text-slate-500 hover:bg-slate-900 hover:text-slate-100"
+                            }`}
+                          >
+                            {child.label}
+                          </Link>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            }
+
+            const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
             return (
               <Link
-                key={href}
-                href={href}
+                key={item.href}
+                href={item.href}
                 className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm ${
                   active ? "bg-blue-600/20 text-blue-200" : "text-slate-400 hover:bg-slate-900 hover:text-slate-100"
                 }`}
               >
                 <Icon className="h-4 w-4" />
-                {label}
+                {item.label}
               </Link>
             );
           })}
@@ -97,7 +159,7 @@ export function AppShell({
             </div>
           </div>
           <nav className="mt-4 flex gap-2 overflow-x-auto lg:hidden">
-            {nav.map(({ href, label }) => (
+            {mobileNav.map(({ href, label }) => (
               <Link key={href} href={href} className="whitespace-nowrap rounded-lg border border-slate-800 px-3 py-2 text-xs text-slate-300">
                 {label}
               </Link>
