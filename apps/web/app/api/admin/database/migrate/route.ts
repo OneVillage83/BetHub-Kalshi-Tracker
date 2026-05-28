@@ -11,6 +11,18 @@ export async function POST(request: Request) {
     return Response.json({ error: { message: "Not found" } }, { status: 404 });
   }
 
-  const result = await applyInitialMigration();
-  return apiResponse(result);
+  try {
+    const result = await applyInitialMigration();
+    return apiResponse(result);
+  } catch (error) {
+    return Response.json(
+      {
+        error: {
+          message: "Database migration failed",
+          detail: error instanceof Error ? error.message : "Unknown error",
+        },
+      },
+      { status: 500 },
+    );
+  }
 }
