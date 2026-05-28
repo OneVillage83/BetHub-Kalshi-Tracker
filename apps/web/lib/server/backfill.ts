@@ -1,7 +1,10 @@
-import { getOrCreatePrimaryAccount, getPrisma } from "@kalshi-tracker/db";
-import { KalshiRestClient, dollarsToCents, normalizeOutcomeSide, parseFixedPoint } from "@kalshi-tracker/kalshi-client";
+import crypto from "node:crypto";
+import { getPrisma } from "@kalshi-tracker/db";
+import { KalshiRestClient, dollarsToCents, normalizeOrderStatus, normalizeOutcomeSide, parseFixedPoint } from "@kalshi-tracker/kalshi-client";
 import type { Prisma } from "@prisma/client";
-import { hasKalshiCredentials, kalshiEnvironment, keyIdHint, STUB_REASON_AWAITING_KALSHI } from "../env";
+import { STUB_REASON_AWAITING_KALSHI } from "../env";
+import type { AuthenticatedAppUser } from "../auth";
+import { buildKalshiClientForAppUser, getKalshiCredentialStatus } from "./kalshi-credentials";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -9,6 +12,8 @@ type ImportStats = {
   balanceSnapshots: number;
   fills: number;
   historicalFills: number;
+  orders: number;
+  historicalOrders: number;
   positions: number;
   settlements: number;
   markets: number;
@@ -47,9 +52,27 @@ type NormalizedPosition = {
   rawJson: JsonRecord;
 };
 
+type NormalizedOrder = {
+  orderId: string;
+  marketTicker: string;
+  eventTicker: string | null;
+  outcomeSide: "yes" | "no" | "unknown";
+  action: string | null;
+  status: "resting" | "executed" | "canceled" | "unknown";
+  originalCount: string | null;
+  remainingCount: string | null;
+  filledCount: string | null;
+  priceCents: number | null;
+  createdTime: Date | null;
+  updatedTime: Date | null;
+  source: string;
+  rawJson: JsonRecord;
+};
+
 type NormalizedSettlement = {
   marketTicker: string;
   eventTicker: string | null;
+  rawHash: string;
   settledTime: Date | null;
   realizedPnlCents: number | null;
   revenueCents: number | null;
@@ -85,20 +108,23 @@ type EventMetadata = {
   rawJson: JsonRecord;
 };
 
-export async function runKalshiBackfill(appUserId: string) {
-  if (!hasKalshiCredentials()) {
-    return createMissingCredentialsSyncRun(appUserId);
+export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: { source?: string; kind?: string } = {}) {
+  const credentialStatus = await getKalshiCredentialStatus(appUser.id);
+  if (!credentialStatus.configured) {
+    return createMissingCredentialsSyncRun(appUser.id);
   }
 
   const prisma = getPrisma();
-  const account = await ensureCurrentPrimaryAccount(appUserId);
+  const { client, accountId } = await buildKalshiClientForAppUser(appUser);
+  const account = await prisma.kalshiAccount.findUniqueOrThrow({ where: { id: accountId } });
   const syncRun = await prisma.syncRun.create({
     data: {
-      appUserId,
+      appUserId: appUser.id,
       kalshiAccountId: account.id,
-      kind: "backfill",
-      source: "netlify-route",
+      kind: options.kind ?? "backfill",
+      source: options.source ?? "netlify-route",
       status: "running",
+      lockedAt: new Date(),
     },
   });
 
@@ -106,6 +132,8 @@ export async function runKalshiBackfill(appUserId: string) {
     balanceSnapshots: 0,
     fills: 0,
     historicalFills: 0,
+    orders: 0,
+    historicalOrders: 0,
     positions: 0,
     settlements: 0,
     markets: 0,
@@ -115,11 +143,12 @@ export async function runKalshiBackfill(appUserId: string) {
   };
 
   try {
-    const client = createKalshiClient();
-    const [balance, fills, historicalFills, positions, settlements] = await Promise.all([
+    const [balance, fills, historicalFills, orders, historicalOrders, positions, settlements] = await Promise.all([
       client.getBalance(),
       client.getAllFills(),
       readOptionalCollection("historical fills", () => client.getAllHistoricalFills(), stats.warnings),
+      readOptionalCollection("orders", () => client.getAllOrders(), stats.warnings),
+      readOptionalCollection("historical orders", () => client.getAllHistoricalOrders(), stats.warnings),
       client.getAllPositions({ count_filter: "position,total_traded" }),
       client.getAllSettlements(),
     ]);
@@ -128,9 +157,13 @@ export async function runKalshiBackfill(appUserId: string) {
       ...normalizeFillCollection(fills, "portfolio", stats),
       ...normalizeFillCollection(historicalFills, "historical", stats),
     ];
+    const normalizedOrders = [
+      ...normalizeOrderCollection(orders, "portfolio", stats),
+      ...normalizeOrderCollection(historicalOrders, "historical", stats),
+    ];
     const normalizedPositions = normalizePositionCollection(positions, stats);
     const normalizedSettlements = normalizeSettlementCollection(settlements, stats);
-    const fallbackEventTickers = collectFallbackEventTickers(normalizedFills, normalizedPositions, normalizedSettlements);
+    const fallbackEventTickers = collectFallbackEventTickers(normalizedFills, normalizedOrders, normalizedPositions, normalizedSettlements);
     const marketTickers = Array.from(fallbackEventTickers.keys());
     const marketsByTicker = await fetchMarketMetadata(client, marketTickers, stats.warnings);
     const eventTickers = collectEventTickers(marketsByTicker, fallbackEventTickers);
@@ -194,6 +227,51 @@ export async function runKalshiBackfill(appUserId: string) {
     stats.fills = normalizedFills.filter((fill) => fill.source === "portfolio").length;
     stats.historicalFills = normalizedFills.filter((fill) => fill.source === "historical").length;
 
+    for (const order of normalizedOrders) {
+      const market = marketsByTicker.get(order.marketTicker);
+      await prisma.order.upsert({
+        where: {
+          kalshiAccountId_orderId: {
+            kalshiAccountId: account.id,
+            orderId: order.orderId,
+          },
+        },
+        create: {
+          kalshiAccountId: account.id,
+          orderId: order.orderId,
+          marketTicker: order.marketTicker,
+          eventTicker: order.eventTicker ?? market?.eventTicker ?? fallbackEventTickers.get(order.marketTicker) ?? null,
+          outcomeSide: order.outcomeSide,
+          action: order.action,
+          status: order.status,
+          originalCount: order.originalCount,
+          remainingCount: order.remainingCount,
+          filledCount: order.filledCount,
+          priceCents: order.priceCents,
+          createdTime: order.createdTime,
+          updatedTime: order.updatedTime,
+          source: order.source,
+          rawJson: order.rawJson as Prisma.InputJsonValue,
+        },
+        update: {
+          eventTicker: order.eventTicker ?? market?.eventTicker ?? fallbackEventTickers.get(order.marketTicker) ?? null,
+          outcomeSide: order.outcomeSide,
+          action: order.action,
+          status: order.status,
+          originalCount: order.originalCount,
+          remainingCount: order.remainingCount,
+          filledCount: order.filledCount,
+          priceCents: order.priceCents,
+          createdTime: order.createdTime,
+          updatedTime: order.updatedTime,
+          source: order.source,
+          rawJson: order.rawJson as Prisma.InputJsonValue,
+        },
+      });
+    }
+    stats.orders = normalizedOrders.filter((order) => order.source === "portfolio").length;
+    stats.historicalOrders = normalizedOrders.filter((order) => order.source === "historical").length;
+
     for (const position of normalizedPositions) {
       const market = marketsByTicker.get(position.marketTicker);
       await prisma.position.upsert({
@@ -234,13 +312,27 @@ export async function runKalshiBackfill(appUserId: string) {
     }
     stats.positions = normalizedPositions.length;
 
-    await prisma.settlement.deleteMany({ where: { kalshiAccountId: account.id } });
     for (const settlement of normalizedSettlements) {
       const market = marketsByTicker.get(settlement.marketTicker);
-      await prisma.settlement.create({
-        data: {
+      await prisma.settlement.upsert({
+        where: {
+          kalshiAccountId_rawHash: {
+            kalshiAccountId: account.id,
+            rawHash: settlement.rawHash,
+          },
+        },
+        create: {
           kalshiAccountId: account.id,
           marketTicker: settlement.marketTicker,
+          eventTicker: settlement.eventTicker ?? market?.eventTicker ?? fallbackEventTickers.get(settlement.marketTicker) ?? null,
+          rawHash: settlement.rawHash,
+          settledTime: settlement.settledTime,
+          realizedPnlCents: settlement.realizedPnlCents,
+          revenueCents: settlement.revenueCents,
+          feeCents: settlement.feeCents,
+          rawJson: settlement.rawJson as Prisma.InputJsonValue,
+        },
+        update: {
           eventTicker: settlement.eventTicker ?? market?.eventTicker ?? fallbackEventTickers.get(settlement.marketTicker) ?? null,
           settledTime: settlement.settledTime,
           realizedPnlCents: settlement.realizedPnlCents,
@@ -257,7 +349,16 @@ export async function runKalshiBackfill(appUserId: string) {
       data: {
         status: "success",
         completedAt: new Date(),
+        lockedAt: null,
         stats: stats as unknown as Prisma.InputJsonValue,
+      },
+    });
+
+    await prisma.kalshiAccount.update({
+      where: { id: account.id },
+      data: {
+        lastSyncAt: new Date(),
+        syncCursor: { lastCompletedSyncRunId: syncRun.id, lastCompletedAt: new Date().toISOString() },
       },
     });
 
@@ -278,6 +379,7 @@ export async function runKalshiBackfill(appUserId: string) {
       data: {
         status: "failed",
         completedAt: new Date(),
+        lockedAt: null,
         errorMessage: message,
         stats: {
           ...stats,
@@ -312,37 +414,6 @@ async function createMissingCredentialsSyncRun(appUserId: string) {
     },
     meta: { source: "stub" as const, stubReason: STUB_REASON_AWAITING_KALSHI },
   };
-}
-
-async function ensureCurrentPrimaryAccount(appUserId: string) {
-  const account = await getOrCreatePrimaryAccount({
-    appUserId,
-    environment: kalshiEnvironment(),
-    keyIdHint: keyIdHint(),
-  });
-
-  if (account.environment === kalshiEnvironment() && account.keyIdHint === keyIdHint() && account.readOnly) {
-    return account;
-  }
-
-  return getPrisma().kalshiAccount.update({
-    where: { id: account.id },
-    data: {
-      environment: kalshiEnvironment(),
-      keyIdHint: keyIdHint(),
-      readOnly: true,
-    },
-  });
-}
-
-function createKalshiClient() {
-  return new KalshiRestClient({
-    baseUrl: process.env.KALSHI_API_BASE_URL ?? "https://external-api.kalshi.com/trade-api/v2",
-    accessKeyId: process.env.KALSHI_ACCESS_KEY_ID ?? "",
-    privateKeyBase64: process.env.KALSHI_PRIVATE_KEY_BASE64,
-    privateKeyPem: process.env.KALSHI_PRIVATE_KEY_PEM,
-    privateKeyPath: process.env.KALSHI_PRIVATE_KEY_PATH,
-  });
 }
 
 async function readOptionalCollection<T>(label: string, loader: () => Promise<T[]>, warnings: string[]) {
@@ -420,6 +491,50 @@ function normalizePositionCollection(rawPositions: unknown[], stats: ImportStats
   return positions;
 }
 
+function normalizeOrderCollection(rawOrders: unknown[], source: string, stats: ImportStats) {
+  const orders: NormalizedOrder[] = [];
+
+  for (const rawOrder of rawOrders) {
+    const order = normalizeOrder(rawOrder, source);
+    if (order) {
+      orders.push(order);
+    } else {
+      stats.skippedRows += 1;
+    }
+  }
+
+  return orders;
+}
+
+function normalizeOrder(rawOrder: unknown, source: string): NormalizedOrder | null {
+  const row = asRecord(rawOrder);
+  const marketTicker = text(row, ["market_ticker", "ticker"]);
+  const orderId = text(row, ["order_id", "id"]);
+  if (!marketTicker || !orderId) return null;
+
+  const outcomeSide = normalizeOutcomeSide(text(row, ["outcome_side", "side", "purchased_side"]));
+
+  return {
+    orderId,
+    marketTicker,
+    eventTicker: text(row, ["event_ticker"]),
+    outcomeSide,
+    action: text(row, ["action"]),
+    status: normalizeOrderStatus(text(row, ["status"])),
+    originalCount: fixedPointOrNull(row, ["initial_count", "initial_count_fp", "count", "count_fp"]),
+    remainingCount: fixedPointOrNull(row, ["remaining_count", "remaining_count_fp"]),
+    filledCount: fixedPointOrNull(row, ["filled_count", "filled_count_fp"]),
+    priceCents:
+      outcomeSide === "no"
+        ? centsFromDollarFields(row, ["no_price_dollars", "price_dollars"], ["no_price", "price"])
+        : centsFromDollarFields(row, ["yes_price_dollars", "price_dollars"], ["yes_price", "price"]),
+    createdTime: date(row, ["created_time", "created_at"]),
+    updatedTime: date(row, ["updated_time", "updated_at"]),
+    source,
+    rawJson: row,
+  };
+}
+
 function normalizePosition(rawPosition: unknown): NormalizedPosition | null {
   const row = asRecord(rawPosition);
   const marketTicker = text(row, ["market_ticker", "ticker"]);
@@ -469,6 +584,7 @@ function normalizeSettlement(rawSettlement: unknown): NormalizedSettlement | nul
   return {
     marketTicker,
     eventTicker: text(row, ["event_ticker"]),
+    rawHash: rawRowHash(row),
     settledTime: date(row, ["settled_time", "settlement_time"]),
     realizedPnlCents,
     revenueCents,
@@ -486,11 +602,13 @@ function calculatedSettlementPnl(row: JsonRecord, revenueCents: number | null, f
 
 function collectFallbackEventTickers(
   fills: NormalizedFill[],
+  orders: NormalizedOrder[],
   positions: NormalizedPosition[],
   settlements: NormalizedSettlement[],
 ) {
   const fallbackEventTickers = new Map<string, string | null>();
   for (const fill of fills) fallbackEventTickers.set(fill.marketTicker, fill.eventTicker);
+  for (const order of orders) fallbackEventTickers.set(order.marketTicker, order.eventTicker);
   for (const position of positions) fallbackEventTickers.set(position.marketTicker, position.eventTicker);
   for (const settlement of settlements) fallbackEventTickers.set(settlement.marketTicker, settlement.eventTicker);
   return fallbackEventTickers;
@@ -742,6 +860,21 @@ function chunks<T>(items: T[], size: number) {
   const result: T[][] = [];
   for (let index = 0; index < items.length; index += size) result.push(items.slice(index, index + size));
   return result;
+}
+
+function rawRowHash(row: JsonRecord) {
+  return crypto.createHash("sha256").update(stableJson(row)).digest("hex");
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as JsonRecord)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function publicBackfillError(error: unknown) {

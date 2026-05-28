@@ -1,18 +1,21 @@
 import { Activity, Database, RadioTower } from "lucide-react";
+import { AccessDenied } from "../components/access-denied";
 import { AppShell } from "../components/app-shell";
 import { AuthRequired } from "../components/auth-required";
 import { DataTable } from "../components/data-table";
 import { DashboardCharts } from "../components/dashboard/dashboard-charts";
 import { MetricCard } from "../components/metric-card";
-import { getAuthenticatedAppUser } from "../lib/auth";
+import { getPageAuthState } from "../lib/auth";
 import { formatCents, formatDate, formatPercent } from "../lib/format";
 import { getCategoryPnl, getDashboardSummary, getFills, getPositions, getSyncStatus, type FillRow, type PositionRow } from "../lib/server/data";
 
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
-  const appUser = await getAuthenticatedAppUser();
-  if (!appUser) return <AuthRequired />;
+  const authState = await getPageAuthState();
+  if (authState.status === "signed_out") return <AuthRequired />;
+  if (authState.status === "access_denied") return <AccessDenied message={authState.message} />;
+  const { appUser } = authState;
 
   const [summary, positions, fills, categoryPnl, syncStatus] = await Promise.all([
     getDashboardSummary(appUser.id),
@@ -42,9 +45,10 @@ export default async function HomePage() {
           <RadioTower className="h-4 w-4 text-teal-300" />
           Sync Health
         </h2>
-        <div className="mt-4 grid gap-3 text-sm md:grid-cols-3">
+        <div className="mt-4 grid gap-3 text-sm md:grid-cols-4">
           <SyncItem icon={<Database className="h-4 w-4" />} label="API" value={syncStatus.data.api} />
           <SyncItem icon={<Activity className="h-4 w-4" />} label="Last sync" value={formatDate(syncStatus.data.lastSyncAt)} />
+          <SyncItem icon={<Activity className="h-4 w-4" />} label="Scheduled" value={formatDate(syncStatus.data.lastScheduledSyncAt)} />
           <SyncItem icon={<RadioTower className="h-4 w-4" />} label="WebSocket" value={syncStatus.data.websocket} />
         </div>
       </section>

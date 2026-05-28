@@ -1,18 +1,26 @@
+import { AccessDenied } from "../../components/access-denied";
 import { AppShell } from "../../components/app-shell";
 import { AuthRequired } from "../../components/auth-required";
 import { BackfillButton } from "../../components/backfill-button";
-import { getAuthenticatedAppUser } from "../../lib/auth";
-import { hasKalshiCredentials, isClerkConfigured, kalshiEnvironment, keyIdHint, STUB_REASON_AWAITING_KALSHI } from "../../lib/env";
+import { InviteManager } from "../../components/invite-manager";
+import { KalshiCredentialsPanel } from "../../components/kalshi-credentials-panel";
+import { getPageAuthState } from "../../lib/auth";
+import { isClerkConfigured } from "../../lib/env";
+import { getKalshiCredentialStatus } from "../../lib/server/kalshi-credentials";
 import { getSyncStatus } from "../../lib/server/data";
+import { listInvites } from "../../lib/server/invites";
 
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage() {
-  const appUser = await getAuthenticatedAppUser();
-  if (!appUser) return <AuthRequired />;
+  const authState = await getPageAuthState();
+  if (authState.status === "signed_out") return <AuthRequired />;
+  if (authState.status === "access_denied") return <AccessDenied message={authState.message} />;
+  const { appUser } = authState;
 
   const sync = await getSyncStatus(appUser.id);
-  const hasCredentials = hasKalshiCredentials();
+  const credentials = await getKalshiCredentialStatus(appUser.id);
+  const invites = appUser.role === "owner" ? await listInvites() : [];
 
   return (
     <AppShell title="Settings" subtitle="Server-side auth, credentials, and sync controls" meta={sync.meta}>
@@ -21,9 +29,10 @@ export default async function SettingsPage() {
           <h2 className="text-lg font-semibold">Runtime</h2>
           <div className="mt-4 space-y-3 text-sm">
             <Row label="Clerk" value={isClerkConfigured() ? "configured" : "missing"} />
-            <Row label="Kalshi environment" value={kalshiEnvironment()} />
-            <Row label="Kalshi credentials" value={hasCredentials ? "configured" : STUB_REASON_AWAITING_KALSHI} />
-            <Row label="Key ID hint" value={keyIdHint() ?? "not set"} />
+            <Row label="Signed in as" value={appUser.email ?? "unknown"} />
+            <Row label="Role" value={appUser.role} />
+            <Row label="Kalshi credentials" value={credentials.configured ? "configured" : "awaiting per-user key"} />
+            <Row label="Global fallback" value={credentials.globalFallbackAvailable ? "enabled for owner" : "disabled"} />
             <Row label="Read-only mode" value="enabled" />
           </div>
         </section>
@@ -37,6 +46,14 @@ export default async function SettingsPage() {
           </div>
         </section>
       </div>
+      <div className="mt-4">
+        <KalshiCredentialsPanel initialStatus={credentials} />
+      </div>
+      {appUser.role === "owner" ? (
+        <div className="mt-4">
+          <InviteManager initialInvites={invites} />
+        </div>
+      ) : null}
     </AppShell>
   );
 }

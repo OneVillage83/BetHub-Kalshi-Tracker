@@ -16,7 +16,7 @@ export function BackfillButton() {
       const stats = payload.data?.stats;
       const summary =
         stats && response.ok
-          ? `Imported ${stats.fills + stats.historicalFills} fills, ${stats.positions} positions, and ${stats.settlements} settlements.`
+          ? `Imported ${stats.fills + stats.historicalFills} fills, ${stats.orders + stats.historicalOrders} orders, ${stats.positions} positions, and ${stats.settlements} settlements.`
           : null;
       setMessage(summary ?? payload.data?.message ?? payload.error?.message ?? "Backfill request finished.");
     } catch {

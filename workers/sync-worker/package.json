@@ -12,11 +12,11 @@
   "dependencies": {
     "@kalshi-tracker/kalshi-client": "workspace:*",
     "@kalshi-tracker/db": "workspace:*",
-    "@prisma/client": "latest",
-    "tsx": "latest",
-    "typescript": "latest"
+    "@prisma/client": "7.8.0",
+    "tsx": "4.22.3",
+    "typescript": "6.0.3"
   },
   "devDependencies": {
-    "@types/node": "latest"
+    "@types/node": "25.9.1"
   }
 }

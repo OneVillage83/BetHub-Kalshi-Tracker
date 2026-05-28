@@ -31,16 +31,25 @@ enum OrderStatus {
   unknown
 }
 
+enum AppUserRole {
+  owner
+  user
+}
+
 model AppUser {
   id          String   @id @default(cuid())
   clerkUserId String   @unique
   email       String?
+  role        AppUserRole @default(user)
+  lastSeenAt  DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   accounts    KalshiAccount[]
   notes       BetNote[]
   syncRuns    SyncRun[]
+  invitesSent Invite[] @relation("InvitesSent")
+  acceptedInvite Invite? @relation("InviteAcceptedBy")
 }
 
 model KalshiAccount {
@@ -49,6 +58,12 @@ model KalshiAccount {
   label       String            @default("Primary Kalshi")
   environment KalshiEnvironment @default(demo)
   keyIdHint   String?
+  accessKeyIdEncrypted String?
+  privateKeyPemEncrypted String?
+  credentialsConfiguredAt DateTime?
+  syncEnabled Boolean           @default(true)
+  lastSyncAt  DateTime?
+  syncCursor  Json?
   readOnly    Boolean           @default(true)
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
@@ -189,6 +204,7 @@ model Settlement {
   kalshiAccountId  String
   marketTicker     String
   eventTicker      String?
+  rawHash          String?
   settledTime      DateTime?
   realizedPnlCents Int?
   revenueCents     Int?
@@ -202,6 +218,7 @@ model Settlement {
 
   @@index([kalshiAccountId, settledTime])
   @@index([marketTicker])
+  @@unique([kalshiAccountId, rawHash])
 }
 
 model BalanceSnapshot {
@@ -243,8 +260,10 @@ model SyncRun {
   kind            String         @default("backfill")
   source          String         @default("api")
   startedAt       DateTime       @default(now())
+  lockedAt        DateTime?
   completedAt     DateTime?
   errorMessage    String?
+  cursor          Json?
   stats           Json?
 
   appUser         AppUser        @relation(fields: [appUserId], references: [id], onDelete: Cascade)
@@ -252,4 +271,22 @@ model SyncRun {
 
   @@index([appUserId, startedAt])
   @@index([kalshiAccountId, startedAt])
+}
+
+model Invite {
+  id                  String      @id @default(cuid())
+  email               String      @unique
+  role                AppUserRole @default(user)
+  invitedByAppUserId  String?
+  acceptedByAppUserId String?     @unique
+  acceptedAt          DateTime?
+  revokedAt           DateTime?
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  invitedBy           AppUser?    @relation("InvitesSent", fields: [invitedByAppUserId], references: [id], onDelete: SetNull)
+  acceptedBy          AppUser?    @relation("InviteAcceptedBy", fields: [acceptedByAppUserId], references: [id], onDelete: SetNull)
+
+  @@index([email, revokedAt])
+  @@index([invitedByAppUserId])
 }

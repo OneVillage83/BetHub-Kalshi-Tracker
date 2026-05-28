@@ -1,5 +1,6 @@
 import { getPrisma, decimalToString } from "@kalshi-tracker/db";
-import { hasKalshiCredentials, STUB_REASON_AWAITING_KALSHI, STUB_REASON_LIVE_SYNC } from "../env";
+import { STUB_REASON_AWAITING_KALSHI, STUB_REASON_LIVE_SYNC } from "../env";
+import { getKalshiCredentialStatus } from "./kalshi-credentials";
 
 type SourceState = {
   source: "db" | "stub";
@@ -63,6 +64,8 @@ export type CategoryPnlRow = {
 export type SyncStatus = {
   api: "healthy" | "credentials_missing";
   lastSyncAt: string | null;
+  lastScheduledSyncAt: string | null;
+  lastSuccessfulSyncAt: string | null;
   lastStatus: string | null;
   lastError: string | null;
   websocket: "stubbed";
@@ -70,8 +73,9 @@ export type SyncStatus = {
   historicalImport: "pending" | "complete" | "stubbed";
 };
 
-function sourceState(): SourceState {
-  if (!hasKalshiCredentials()) {
+async function sourceState(appUserId: string): Promise<SourceState> {
+  const credentials = await getKalshiCredentialStatus(appUserId);
+  if (!credentials.configured) {
     return { source: "stub", stubReason: STUB_REASON_AWAITING_KALSHI };
   }
 
@@ -98,7 +102,8 @@ export async function getDashboardSummary(appUserId: string): Promise<{ data: Da
     equity: [],
   };
 
-  if (accountIds.length === 0) return { data: zero, meta: sourceState() };
+  const meta = await sourceState(appUserId);
+  if (accountIds.length === 0) return { data: zero, meta };
 
   const [latestBalance, balances, positions, settlements] = await Promise.all([
     getPrisma().balanceSnapshot.findFirst({
@@ -135,13 +140,14 @@ export async function getDashboardSummary(appUserId: string): Promise<{ data: Da
         valueCents: (balance.cashBalanceCents ?? 0) + (balance.portfolioValueCents ?? 0),
       })),
     },
-    meta: sourceState(),
+    meta,
   };
 }
 
 export async function getFills(appUserId: string): Promise<{ data: FillRow[]; meta: SourceState }> {
   const accountIds = await accountIdsFor(appUserId);
-  if (accountIds.length === 0) return { data: [], meta: sourceState() };
+  const meta = await sourceState(appUserId);
+  if (accountIds.length === 0) return { data: [], meta };
 
   const fills = await getPrisma().fill.findMany({
     where: { kalshiAccountId: { in: accountIds } },
@@ -164,13 +170,14 @@ export async function getFills(appUserId: string): Promise<{ data: FillRow[]; me
       feeCents: fill.feeCents,
       source: fill.source,
     })),
-    meta: sourceState(),
+    meta,
   };
 }
 
 export async function getPositions(appUserId: string): Promise<{ data: PositionRow[]; meta: SourceState }> {
   const accountIds = await accountIdsFor(appUserId);
-  if (accountIds.length === 0) return { data: [], meta: sourceState() };
+  const meta = await sourceState(appUserId);
+  if (accountIds.length === 0) return { data: [], meta };
 
   const positions = await getPrisma().position.findMany({
     where: { kalshiAccountId: { in: accountIds } },
@@ -193,13 +200,14 @@ export async function getPositions(appUserId: string): Promise<{ data: PositionR
       unrealizedPnlCents: position.unrealizedPnlCents,
       feesPaidCents: position.feesPaidCents,
     })),
-    meta: sourceState(),
+    meta,
   };
 }
 
 export async function getSettlements(appUserId: string): Promise<{ data: SettlementRow[]; meta: SourceState }> {
   const accountIds = await accountIdsFor(appUserId);
-  if (accountIds.length === 0) return { data: [], meta: sourceState() };
+  const meta = await sourceState(appUserId);
+  if (accountIds.length === 0) return { data: [], meta };
 
   const settlements = await getPrisma().settlement.findMany({
     where: { kalshiAccountId: { in: accountIds } },
@@ -218,7 +226,7 @@ export async function getSettlements(appUserId: string): Promise<{ data: Settlem
       revenueCents: settlement.revenueCents,
       feeCents: settlement.feeCents,
     })),
-    meta: sourceState(),
+    meta,
   };
 }
 
@@ -243,18 +251,30 @@ export async function getSyncStatus(appUserId: string): Promise<{ data: SyncStat
     where: { appUserId },
     orderBy: { startedAt: "desc" },
   });
-  const credentials = hasKalshiCredentials();
+  const [lastScheduledSync, lastSuccessfulSync] = await Promise.all([
+    getPrisma().syncRun.findFirst({
+      where: { appUserId, source: "netlify-scheduled" },
+      orderBy: { startedAt: "desc" },
+    }),
+    getPrisma().syncRun.findFirst({
+      where: { appUserId, status: "success" },
+      orderBy: { completedAt: "desc" },
+    }),
+  ]);
+  const credentials = await getKalshiCredentialStatus(appUserId);
 
   return {
     data: {
-      api: credentials ? "healthy" : "credentials_missing",
+      api: credentials.configured ? "healthy" : "credentials_missing",
       lastSyncAt: latest?.completedAt?.toISOString() ?? latest?.startedAt?.toISOString() ?? null,
+      lastScheduledSyncAt: lastScheduledSync?.completedAt?.toISOString() ?? lastScheduledSync?.startedAt.toISOString() ?? null,
+      lastSuccessfulSyncAt: lastSuccessfulSync?.completedAt?.toISOString() ?? null,
       lastStatus: latest?.status ?? null,
       lastError: latest?.errorMessage ?? null,
       websocket: "stubbed",
       readOnly: true,
-      historicalImport: latest?.status === "success" ? "complete" : credentials ? "pending" : "stubbed",
+      historicalImport: latest?.status === "success" ? "complete" : credentials.configured ? "pending" : "stubbed",
     },
-    meta: credentials ? { source: "stub", stubReason: STUB_REASON_LIVE_SYNC } : sourceState(),
+    meta: credentials.configured ? { source: "stub", stubReason: STUB_REASON_LIVE_SYNC } : await sourceState(appUserId),
   };
 }

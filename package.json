@@ -18,12 +18,14 @@
     "test": "pnpm -r test"
   },
   "dependencies": {
-    "@netlify/functions": "latest"
+    "@kalshi-tracker/db": "workspace:*",
+    "@kalshi-tracker/kalshi-client": "workspace:*",
+    "@netlify/functions": "5.2.2"
   },
   "devDependencies": {
-    "@prisma/client": "latest",
-    "prisma": "latest",
-    "typescript": "latest",
-    "vitest": "latest"
+    "@prisma/client": "7.8.0",
+    "prisma": "7.8.0",
+    "typescript": "6.0.3",
+    "vitest": "4.1.7"
   }
 }

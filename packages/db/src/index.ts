@@ -10,6 +10,13 @@ export class DatabaseConfigurationError extends Error {
   }
 }
 
+export class InviteRequiredError extends Error {
+  constructor(message = "This account has not been invited to BetHub Kalshi Tracker.") {
+    super(message);
+    this.name = "InviteRequiredError";
+  }
+}
+
 export function getDatabaseConnectionString() {
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
 
@@ -40,6 +47,10 @@ export function isDatabaseConfigurationError(error: unknown) {
   return error instanceof DatabaseConfigurationError || (error instanceof Error && error.name === "DatabaseConfigurationError");
 }
 
+export function isInviteRequiredError(error: unknown) {
+  return error instanceof InviteRequiredError || (error instanceof Error && error.name === "InviteRequiredError");
+}
+
 export function getPrisma() {
   if (!globalForPrisma.prisma) {
     globalForPrisma.prisma = new PrismaClient({
@@ -56,17 +67,78 @@ export const prisma = new Proxy({} as PrismaClient, {
   },
 });
 
+export function normalizeEmail(email: string | null | undefined) {
+  const normalized = email?.trim().toLowerCase();
+  return normalized || null;
+}
+
+export function ownerEmailsFromEnv(value = process.env.OWNER_EMAILS) {
+  return new Set(
+    (value ?? "")
+      .split(",")
+      .map((email) => normalizeEmail(email))
+      .filter((email): email is string => Boolean(email)),
+  );
+}
+
 export async function getOrCreateAppUser(params: { clerkUserId: string; email?: string | null }) {
-  return getPrisma().appUser.upsert({
+  const email = normalizeEmail(params.email);
+  const ownerEmails = ownerEmailsFromEnv();
+  const isOwnerEmail = Boolean(email && ownerEmails.has(email));
+  const existing = await getPrisma().appUser.findUnique({
     where: { clerkUserId: params.clerkUserId },
-    create: {
+  });
+
+  if (existing) {
+    return getPrisma().appUser.update({
+      where: { id: existing.id },
+      data: {
+        email: email ?? existing.email,
+        role: isOwnerEmail ? "owner" : existing.role,
+        lastSeenAt: new Date(),
+      },
+    });
+  }
+
+  if (isOwnerEmail) {
+    return getPrisma().appUser.create({
+      data: {
+        clerkUserId: params.clerkUserId,
+        email,
+        role: "owner",
+        lastSeenAt: new Date(),
+      },
+    });
+  }
+
+  if (!email) throw new InviteRequiredError("Your Clerk account does not have an email address that can be matched to an invite.");
+
+  const invite = await getPrisma().invite.findUnique({
+    where: { email },
+  });
+
+  if (!invite || invite.revokedAt) {
+    throw new InviteRequiredError();
+  }
+
+  const appUser = await getPrisma().appUser.create({
+    data: {
       clerkUserId: params.clerkUserId,
-      email: params.email ?? null,
-    },
-    update: {
-      email: params.email ?? undefined,
+      email,
+      role: invite.role,
+      lastSeenAt: new Date(),
     },
   });
+
+  await getPrisma().invite.update({
+    where: { id: invite.id },
+    data: {
+      acceptedByAppUserId: appUser.id,
+      acceptedAt: invite.acceptedAt ?? new Date(),
+    },
+  });
+
+  return appUser;
 }
 
 export async function getPrimaryAccount(appUserId: string) {

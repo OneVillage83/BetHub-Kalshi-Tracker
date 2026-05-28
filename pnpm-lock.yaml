@@ -8,52 +8,58 @@ importers:
 
   .:
     dependencies:
+      '@kalshi-tracker/db':
+        specifier: workspace:*
+        version: link:packages/db
+      '@kalshi-tracker/kalshi-client':
+        specifier: workspace:*
+        version: link:packages/kalshi-client
       '@netlify/functions':
-        specifier: latest
+        specifier: 5.2.2
         version: 5.2.2
     devDependencies:
       '@prisma/client':
-        specifier: latest
+        specifier: 7.8.0
         version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@6.0.3))(typescript@6.0.3)
       prisma:
-        specifier: latest
+        specifier: 7.8.0
         version: 7.8.0(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@6.0.3)
       typescript:
-        specifier: latest
+        specifier: 6.0.3
         version: 6.0.3
       vitest:
-        specifier: latest
+        specifier: 4.1.7
         version: 4.1.7(@types/node@25.9.1)(vite@8.0.14(@types/node@25.9.1)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3))
 
   apps/api:
     dependencies:
       '@fastify/cors':
-        specifier: latest
+        specifier: 11.2.0
         version: 11.2.0
       '@prisma/client':
-        specifier: latest
+        specifier: 7.8.0
         version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@6.0.3))(typescript@6.0.3)
       fastify:
-        specifier: latest
+        specifier: 5.8.5
         version: 5.8.5
       tsx:
-        specifier: latest
+        specifier: 4.22.3
         version: 4.22.3
       typescript:
-        specifier: latest
+        specifier: 6.0.3
         version: 6.0.3
       zod:
-        specifier: latest
+        specifier: 4.4.3
         version: 4.4.3
     devDependencies:
       '@types/node':
-        specifier: latest
+        specifier: 25.9.1
         version: 25.9.1
 
   apps/web:
     dependencies:
       '@clerk/nextjs':
-        specifier: latest
+        specifier: 7.4.2
         version: 7.4.2(next@16.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@kalshi-tracker/db':
         specifier: workspace:*
@@ -62,94 +68,94 @@ importers:
         specifier: workspace:*
         version: link:../../packages/kalshi-client
       '@tailwindcss/postcss':
-        specifier: latest
+        specifier: 4.3.0
         version: 4.3.0
       '@types/node':
-        specifier: latest
+        specifier: 25.9.1
         version: 25.9.1
       '@types/react':
-        specifier: latest
+        specifier: 19.2.15
         version: 19.2.15
       '@types/react-dom':
-        specifier: latest
+        specifier: 19.2.3
         version: 19.2.3(@types/react@19.2.15)
       autoprefixer:
-        specifier: latest
+        specifier: 10.5.0
         version: 10.5.0(postcss@8.5.15)
       framer-motion:
-        specifier: latest
+        specifier: 12.40.0
         version: 12.40.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       lucide-react:
-        specifier: latest
+        specifier: 1.16.0
         version: 1.16.0(react@19.2.6)
       next:
-        specifier: latest
+        specifier: 16.2.6
         version: 16.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       postcss:
-        specifier: latest
+        specifier: 8.5.15
         version: 8.5.15
       react:
-        specifier: latest
+        specifier: 19.2.6
         version: 19.2.6
       react-dom:
-        specifier: latest
+        specifier: 19.2.6
         version: 19.2.6(react@19.2.6)
       recharts:
-        specifier: latest
+        specifier: 3.8.1
         version: 3.8.1(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react-is@19.2.6)(react@19.2.6)(redux@5.0.1)
       tailwindcss:
-        specifier: latest
+        specifier: 4.3.0
         version: 4.3.0
       typescript:
-        specifier: latest
+        specifier: 6.0.3
         version: 6.0.3
     devDependencies:
       vitest:
-        specifier: latest
+        specifier: 4.1.7
         version: 4.1.7(@types/node@25.9.1)(vite@8.0.14(@types/node@25.9.1)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3))
 
   packages/db:
     dependencies:
       '@prisma/adapter-pg':
-        specifier: latest
+        specifier: 7.8.0
         version: 7.8.0
       '@prisma/client':
-        specifier: latest
+        specifier: 7.8.0
         version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@6.0.3))(typescript@6.0.3)
       pg:
-        specifier: latest
+        specifier: 8.21.0
         version: 8.21.0
     devDependencies:
       '@types/node':
-        specifier: latest
+        specifier: 25.9.1
         version: 25.9.1
       '@types/pg':
-        specifier: latest
+        specifier: 8.20.0
         version: 8.20.0
       typescript:
-        specifier: latest
+        specifier: 6.0.3
         version: 6.0.3
       vitest:
-        specifier: latest
+        specifier: 4.1.7
         version: 4.1.7(@types/node@25.9.1)(vite@8.0.14(@types/node@25.9.1)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3))
 
   packages/kalshi-client:
     dependencies:
       ws:
-        specifier: latest
+        specifier: 8.21.0
         version: 8.21.0
     devDependencies:
       '@types/node':
-        specifier: latest
+        specifier: 25.9.1
         version: 25.9.1
       '@types/ws':
-        specifier: latest
+        specifier: 8.18.1
         version: 8.18.1
       typescript:
-        specifier: latest
+        specifier: 6.0.3
         version: 6.0.3
       vitest:
-        specifier: latest
+        specifier: 4.1.7
         version: 4.1.7(@types/node@25.9.1)(vite@8.0.14(@types/node@25.9.1)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3))
 
   workers/sync-worker:
@@ -161,17 +167,17 @@ importers:
         specifier: workspace:*
         version: link:../../packages/kalshi-client
       '@prisma/client':
-        specifier: latest
+        specifier: 7.8.0
         version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@6.0.3))(typescript@6.0.3)
       tsx:
-        specifier: latest
+        specifier: 4.22.3
         version: 4.22.3
       typescript:
-        specifier: latest
+        specifier: 6.0.3
         version: 6.0.3
     devDependencies:
       '@types/node':
-        specifier: latest
+        specifier: 25.9.1
         version: 25.9.1
 
 packages:

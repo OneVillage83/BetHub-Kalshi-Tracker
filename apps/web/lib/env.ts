@@ -18,6 +18,13 @@ export function kalshiEnvironment() {
   return process.env.KALSHI_ENV === "production" ? "production" : "demo";
 }
 
+export function kalshiApiBaseUrl(environment: "demo" | "production" = kalshiEnvironment()) {
+  if (process.env.KALSHI_API_BASE_URL) return process.env.KALSHI_API_BASE_URL;
+  return environment === "production"
+    ? "https://external-api.kalshi.com/trade-api/v2"
+    : "https://demo-api.kalshi.co/trade-api/v2";
+}
+
 export function keyIdHint() {
   const key = process.env.KALSHI_ACCESS_KEY_ID;
   if (!key) return null;

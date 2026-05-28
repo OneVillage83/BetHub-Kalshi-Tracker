@@ -10,7 +10,7 @@ export async function POST() {
   if (!appUser) return response;
 
   try {
-    const result = await runKalshiBackfill(appUser.id);
+    const result = await runKalshiBackfill(appUser);
     return apiResponse(result.data, result.meta, { status: result.meta.source === "stub" ? 202 : 200 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Kalshi backfill failed.";
