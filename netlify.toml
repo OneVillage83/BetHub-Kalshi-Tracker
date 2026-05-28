@@ -11,7 +11,7 @@
   directory = "netlify/functions"
   node_bundler = "esbuild"
   external_node_modules = ["@prisma/client", ".prisma/client"]
-  included_files = ["prisma/schema.prisma"]
+  included_files = ["prisma/schema.prisma", "prisma/migrations/**"]
 
 [functions."sync-scheduled"]
   schedule = "@hourly"

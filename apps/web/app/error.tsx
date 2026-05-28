@@ -1,7 +1,5 @@
 "use client";
 
-import Link from "next/link";
-
 export default function Error({ reset }: { error: Error & { digest?: string }; reset: () => void }) {
   return (
     <main className="flex min-h-screen items-center justify-center bg-[#060b12] px-6 text-slate-100">
@@ -16,12 +14,12 @@ export default function Error({ reset }: { error: Error & { digest?: string }; r
           <button type="button" onClick={reset} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500">
             Try again
           </button>
-          <Link href="/api/health" className="rounded-lg border border-slate-800 px-4 py-2 text-sm text-slate-300 hover:bg-slate-900">
+          <a href="/api/health" className="rounded-lg border border-slate-800 px-4 py-2 text-sm text-slate-300 hover:bg-slate-900">
             Check health
-          </Link>
-          <Link href="/sign-in" className="rounded-lg border border-slate-800 px-4 py-2 text-sm text-slate-300 hover:bg-slate-900">
+          </a>
+          <a href="/sign-in" className="rounded-lg border border-slate-800 px-4 py-2 text-sm text-slate-300 hover:bg-slate-900">
             Sign in
-          </Link>
+          </a>
         </div>
       </section>
     </main>

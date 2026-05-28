@@ -10,7 +10,7 @@ export default function SignInPage() {
           BetHub Kalshi Tracker
         </Link>
         {isClerkConfigured() ? (
-          <SignIn appearance={{ baseTheme: undefined }} />
+          <SignIn routing="path" path="/sign-in" signUpUrl="/sign-up" fallbackRedirectUrl="/" appearance={{ baseTheme: undefined }} />
         ) : (
           <div className="rounded-lg border border-slate-800 bg-slate-950 p-6">
             <h1 className="text-xl font-semibold">Clerk is not configured</h1>

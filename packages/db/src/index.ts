@@ -105,3 +105,20 @@ export function decimalToString(value: Prisma.Decimal | number | string | null |
   if (value == null) return null;
   return value.toString();
 }
+
+export async function isDatabaseSchemaReady() {
+  try {
+    const rows = await getPrisma().$queryRaw<Array<{ exists: boolean }>>`
+      SELECT EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = 'AppUser'
+      ) AS "exists"
+    `;
+
+    return Boolean(rows[0]?.exists);
+  } catch {
+    return false;
+  }
+}
