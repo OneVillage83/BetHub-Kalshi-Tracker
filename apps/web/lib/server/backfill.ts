@@ -62,7 +62,7 @@ export type ImportStats = BackfillCounts & {
   coreImportCompleted?: boolean;
 };
 
-type NormalizedFill = {
+export type NormalizedFill = {
   fillId: string;
   tradeId: string | null;
   orderId: string | null;
@@ -78,7 +78,7 @@ type NormalizedFill = {
   rawJson: JsonRecord;
 };
 
-type NormalizedPosition = {
+export type NormalizedPosition = {
   marketTicker: string;
   eventTicker: string | null;
   positionContracts: string;
@@ -92,7 +92,7 @@ type NormalizedPosition = {
   rawJson: JsonRecord;
 };
 
-type NormalizedEventPosition = {
+export type NormalizedEventPosition = {
   eventTicker: string;
   totalCostCents: number | null;
   totalCostShares: string;
@@ -102,7 +102,7 @@ type NormalizedEventPosition = {
   rawJson: JsonRecord;
 };
 
-type NormalizedOrder = {
+export type NormalizedOrder = {
   orderId: string;
   marketTicker: string;
   eventTicker: string | null;
@@ -119,7 +119,7 @@ type NormalizedOrder = {
   rawJson: JsonRecord;
 };
 
-type NormalizedSettlement = {
+export type NormalizedSettlement = {
   marketTicker: string;
   eventTicker: string | null;
   rawHash: string;
@@ -285,199 +285,23 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
     stats.settlements = normalizedSettlements.length;
 
     await updateBackfillProgress(prisma, syncRun.id, stats, "database_import");
-    const fallbackEventTickerSet = new Set([
-      ...Array.from(fallbackEventTickers.values()).filter((ticker): ticker is string => Boolean(ticker)),
-      ...normalizedEventPositions.map((position) => position.eventTicker),
-    ]);
-    await ensureEvents(new Map(), fallbackEventTickerSet);
-    await ensureMarkets(new Map(), fallbackEventTickers, new Map());
-
-    await prisma.balanceSnapshot.create({
-      data: {
-        kalshiAccountId: account.id,
-        cashBalanceCents: centsFromIntegerField(asRecord(balance), ["balance", "cash_balance"]),
-        portfolioValueCents: centsFromIntegerField(asRecord(balance), ["portfolio_value"]),
-        rawJson: balance as Prisma.InputJsonValue,
-      },
+    const importedCounts = await importCoreBackfillData(prisma, account.id, {
+      balance,
+      fills: normalizedFills,
+      orders: normalizedOrders,
+      positions: normalizedPositions,
+      eventPositions: normalizedEventPositions,
+      settlements: normalizedSettlements,
+      fallbackEventTickers,
     });
-    stats.balanceSnapshots = 1;
-
-    for (const fill of normalizedFills) {
-      await prisma.fill.upsert({
-        where: {
-          kalshiAccountId_fillId: {
-            kalshiAccountId: account.id,
-            fillId: fill.fillId,
-          },
-        },
-        create: {
-          kalshiAccountId: account.id,
-          fillId: fill.fillId,
-          tradeId: fill.tradeId,
-          orderId: fill.orderId,
-          marketTicker: fill.marketTicker,
-          eventTicker: fill.eventTicker ?? fallbackEventTickers.get(fill.marketTicker) ?? null,
-          outcomeSide: fill.outcomeSide,
-          action: fill.action,
-          contractCount: fill.contractCount,
-          priceCents: fill.priceCents,
-          feeCents: fill.feeCents,
-          createdTime: fill.createdTime,
-          source: fill.source,
-          rawJson: fill.rawJson as Prisma.InputJsonValue,
-        },
-        update: {
-          tradeId: fill.tradeId,
-          orderId: fill.orderId,
-          eventTicker: fill.eventTicker ?? fallbackEventTickers.get(fill.marketTicker) ?? null,
-          outcomeSide: fill.outcomeSide,
-          action: fill.action,
-          contractCount: fill.contractCount,
-          priceCents: fill.priceCents,
-          feeCents: fill.feeCents,
-          createdTime: fill.createdTime,
-          source: fill.source,
-          rawJson: fill.rawJson as Prisma.InputJsonValue,
-        },
-      });
-    }
-    for (const order of normalizedOrders) {
-      await prisma.order.upsert({
-        where: {
-          kalshiAccountId_orderId: {
-            kalshiAccountId: account.id,
-            orderId: order.orderId,
-          },
-        },
-        create: {
-          kalshiAccountId: account.id,
-          orderId: order.orderId,
-          marketTicker: order.marketTicker,
-          eventTicker: order.eventTicker ?? fallbackEventTickers.get(order.marketTicker) ?? null,
-          outcomeSide: order.outcomeSide,
-          action: order.action,
-          status: order.status,
-          originalCount: order.originalCount,
-          remainingCount: order.remainingCount,
-          filledCount: order.filledCount,
-          priceCents: order.priceCents,
-          createdTime: order.createdTime,
-          updatedTime: order.updatedTime,
-          source: order.source,
-          rawJson: order.rawJson as Prisma.InputJsonValue,
-        },
-        update: {
-          eventTicker: order.eventTicker ?? fallbackEventTickers.get(order.marketTicker) ?? null,
-          outcomeSide: order.outcomeSide,
-          action: order.action,
-          status: order.status,
-          originalCount: order.originalCount,
-          remainingCount: order.remainingCount,
-          filledCount: order.filledCount,
-          priceCents: order.priceCents,
-          createdTime: order.createdTime,
-          updatedTime: order.updatedTime,
-          source: order.source,
-          rawJson: order.rawJson as Prisma.InputJsonValue,
-        },
-      });
-    }
-    for (const position of normalizedPositions) {
-      await prisma.position.upsert({
-        where: {
-          kalshiAccountId_marketTicker: {
-            kalshiAccountId: account.id,
-            marketTicker: position.marketTicker,
-          },
-        },
-        create: {
-          kalshiAccountId: account.id,
-          marketTicker: position.marketTicker,
-          eventTicker: position.eventTicker ?? fallbackEventTickers.get(position.marketTicker) ?? null,
-          positionContracts: position.positionContracts,
-          totalTraded: position.totalTraded,
-          averagePriceCents: position.averagePriceCents,
-          markPriceCents: position.markPriceCents,
-          exposureCents: position.exposureCents,
-          realizedPnlCents: position.realizedPnlCents,
-          unrealizedPnlCents: position.unrealizedPnlCents,
-          feesPaidCents: position.feesPaidCents,
-          rawJson: position.rawJson as Prisma.InputJsonValue,
-        },
-        update: {
-          eventTicker: position.eventTicker ?? fallbackEventTickers.get(position.marketTicker) ?? null,
-          positionContracts: position.positionContracts,
-          totalTraded: position.totalTraded,
-          averagePriceCents: position.averagePriceCents,
-          markPriceCents: position.markPriceCents,
-          exposureCents: position.exposureCents,
-          realizedPnlCents: position.realizedPnlCents,
-          unrealizedPnlCents: position.unrealizedPnlCents,
-          feesPaidCents: position.feesPaidCents,
-          rawJson: position.rawJson as Prisma.InputJsonValue,
-          syncedAt: new Date(),
-        },
-      });
-    }
-    for (const position of normalizedEventPositions) {
-      await prisma.eventPosition.upsert({
-        where: {
-          kalshiAccountId_eventTicker: {
-            kalshiAccountId: account.id,
-            eventTicker: position.eventTicker,
-          },
-        },
-        create: {
-          kalshiAccountId: account.id,
-          eventTicker: position.eventTicker,
-          totalCostCents: position.totalCostCents,
-          totalCostShares: position.totalCostShares,
-          eventExposureCents: position.eventExposureCents,
-          realizedPnlCents: position.realizedPnlCents,
-          feesPaidCents: position.feesPaidCents,
-          rawJson: position.rawJson as Prisma.InputJsonValue,
-        },
-        update: {
-          totalCostCents: position.totalCostCents,
-          totalCostShares: position.totalCostShares,
-          eventExposureCents: position.eventExposureCents,
-          realizedPnlCents: position.realizedPnlCents,
-          feesPaidCents: position.feesPaidCents,
-          rawJson: position.rawJson as Prisma.InputJsonValue,
-          syncedAt: new Date(),
-        },
-      });
-    }
-    for (const settlement of normalizedSettlements) {
-      await prisma.settlement.upsert({
-        where: {
-          kalshiAccountId_rawHash: {
-            kalshiAccountId: account.id,
-            rawHash: settlement.rawHash,
-          },
-        },
-        create: {
-          kalshiAccountId: account.id,
-          marketTicker: settlement.marketTicker,
-          eventTicker: settlement.eventTicker ?? fallbackEventTickers.get(settlement.marketTicker) ?? null,
-          rawHash: settlement.rawHash,
-          settledTime: settlement.settledTime,
-          realizedPnlCents: settlement.realizedPnlCents,
-          revenueCents: settlement.revenueCents,
-          feeCents: settlement.feeCents,
-          rawJson: settlement.rawJson as Prisma.InputJsonValue,
-        },
-        update: {
-          eventTicker: settlement.eventTicker ?? fallbackEventTickers.get(settlement.marketTicker) ?? null,
-          settledTime: settlement.settledTime,
-          realizedPnlCents: settlement.realizedPnlCents,
-          revenueCents: settlement.revenueCents,
-          feeCents: settlement.feeCents,
-          rawJson: settlement.rawJson as Prisma.InputJsonValue,
-        },
-      });
-    }
-
+    stats.balanceSnapshots = importedCounts.balanceSnapshots;
+    stats.fills = importedCounts.fills;
+    stats.historicalFills = importedCounts.historicalFills;
+    stats.orders = importedCounts.orders;
+    stats.historicalOrders = importedCounts.historicalOrders;
+    stats.positions = importedCounts.positions;
+    stats.eventPositions = importedCounts.eventPositions;
+    stats.settlements = importedCounts.settlements;
     stats.coreImportCompleted = true;
     await saveBackfillStats(prisma, syncRun.id, stats);
     await enrichOptionalMetadataBestEffort({
@@ -1163,11 +987,178 @@ function collectFallbackEventTickers(
   settlements: NormalizedSettlement[],
 ) {
   const fallbackEventTickers = new Map<string, string | null>();
-  for (const fill of fills) fallbackEventTickers.set(fill.marketTicker, fill.eventTicker);
-  for (const order of orders) fallbackEventTickers.set(order.marketTicker, order.eventTicker);
-  for (const position of positions) fallbackEventTickers.set(position.marketTicker, position.eventTicker);
-  for (const settlement of settlements) fallbackEventTickers.set(settlement.marketTicker, settlement.eventTicker);
+  for (const fill of fills) setFallbackEventTicker(fallbackEventTickers, fill.marketTicker, fill.eventTicker);
+  for (const order of orders) setFallbackEventTicker(fallbackEventTickers, order.marketTicker, order.eventTicker);
+  for (const position of positions) setFallbackEventTicker(fallbackEventTickers, position.marketTicker, position.eventTicker);
+  for (const settlement of settlements) setFallbackEventTicker(fallbackEventTickers, settlement.marketTicker, settlement.eventTicker);
   return fallbackEventTickers;
+}
+
+function setFallbackEventTicker(fallbackEventTickers: Map<string, string | null>, marketTicker: string, eventTicker: string | null) {
+  if (!fallbackEventTickers.has(marketTicker) || eventTicker) {
+    fallbackEventTickers.set(marketTicker, eventTicker);
+  }
+}
+
+type CoreBackfillImportInput = {
+  balance: unknown;
+  fills: NormalizedFill[];
+  orders: NormalizedOrder[];
+  positions: NormalizedPosition[];
+  eventPositions: NormalizedEventPosition[];
+  settlements: NormalizedSettlement[];
+  fallbackEventTickers: Map<string, string | null>;
+};
+
+type CoreBackfillImportPayload = {
+  balanceSnapshot: Prisma.BalanceSnapshotCreateInput;
+  events: Prisma.EventCreateManyInput[];
+  markets: Prisma.MarketCreateManyInput[];
+  fills: Prisma.FillCreateManyInput[];
+  orders: Prisma.OrderCreateManyInput[];
+  positions: Prisma.PositionCreateManyInput[];
+  eventPositions: Prisma.EventPositionCreateManyInput[];
+  settlements: Prisma.SettlementCreateManyInput[];
+};
+
+async function importCoreBackfillData(prisma: ReturnType<typeof getPrisma>, kalshiAccountId: string, input: CoreBackfillImportInput) {
+  const payload = buildCoreBackfillImportPayload(kalshiAccountId, input);
+  const operations: Prisma.PrismaPromise<unknown>[] = [];
+
+  if (payload.events.length) operations.push(prisma.event.createMany({ data: payload.events, skipDuplicates: true }));
+  if (payload.markets.length) operations.push(prisma.market.createMany({ data: payload.markets, skipDuplicates: true }));
+  operations.push(
+    prisma.balanceSnapshot.create({ data: payload.balanceSnapshot }),
+    prisma.fill.deleteMany({ where: { kalshiAccountId } }),
+    prisma.order.deleteMany({ where: { kalshiAccountId } }),
+    prisma.position.deleteMany({ where: { kalshiAccountId } }),
+    prisma.eventPosition.deleteMany({ where: { kalshiAccountId } }),
+    prisma.settlement.deleteMany({ where: { kalshiAccountId } }),
+  );
+
+  if (payload.fills.length) operations.push(prisma.fill.createMany({ data: payload.fills }));
+  if (payload.orders.length) operations.push(prisma.order.createMany({ data: payload.orders }));
+  if (payload.positions.length) operations.push(prisma.position.createMany({ data: payload.positions }));
+  if (payload.eventPositions.length) operations.push(prisma.eventPosition.createMany({ data: payload.eventPositions }));
+  if (payload.settlements.length) operations.push(prisma.settlement.createMany({ data: payload.settlements }));
+
+  await prisma.$transaction(operations, { timeout: 20_000 });
+
+  return {
+    balanceSnapshots: 1,
+    fills: payload.fills.filter((fill) => fill.source === "portfolio").length,
+    historicalFills: payload.fills.filter((fill) => fill.source === "historical").length,
+    orders: payload.orders.filter((order) => order.source === "portfolio").length,
+    historicalOrders: payload.orders.filter((order) => order.source === "historical").length,
+    positions: payload.positions.length,
+    eventPositions: payload.eventPositions.length,
+    settlements: payload.settlements.length,
+  };
+}
+
+export function buildCoreBackfillImportPayload(kalshiAccountId: string, input: CoreBackfillImportInput): CoreBackfillImportPayload {
+  const now = new Date();
+  const balanceRecord = asRecord(input.balance);
+  const eventTickers = new Set([
+    ...Array.from(input.fallbackEventTickers.values()).filter((ticker): ticker is string => Boolean(ticker)),
+    ...input.eventPositions.map((position) => position.eventTicker),
+  ]);
+
+  const events = Array.from(eventTickers).map((ticker) => ({
+    ticker,
+    rawJson: { source: "kalshi-backfill-placeholder", ticker } as Prisma.InputJsonValue,
+  }));
+  const markets = Array.from(input.fallbackEventTickers.entries()).map(([ticker, eventTicker]) => ({
+    ticker,
+    eventTicker,
+    rawJson: { source: "kalshi-backfill-placeholder", ticker } as Prisma.InputJsonValue,
+  }));
+  const fills = dedupeBy(input.fills, (fill) => fill.fillId).map((fill) => ({
+    kalshiAccountId,
+    fillId: fill.fillId,
+    tradeId: fill.tradeId,
+    orderId: fill.orderId,
+    marketTicker: fill.marketTicker,
+    eventTicker: fill.eventTicker ?? input.fallbackEventTickers.get(fill.marketTicker) ?? null,
+    outcomeSide: fill.outcomeSide,
+    action: fill.action,
+    contractCount: fill.contractCount,
+    priceCents: fill.priceCents,
+    feeCents: fill.feeCents,
+    createdTime: fill.createdTime,
+    source: fill.source,
+    rawJson: fill.rawJson as Prisma.InputJsonValue,
+  }));
+  const orders = dedupeBy(input.orders, (order) => order.orderId).map((order) => ({
+    kalshiAccountId,
+    orderId: order.orderId,
+    marketTicker: order.marketTicker,
+    eventTicker: order.eventTicker ?? input.fallbackEventTickers.get(order.marketTicker) ?? null,
+    outcomeSide: order.outcomeSide,
+    action: order.action,
+    status: order.status,
+    originalCount: order.originalCount,
+    remainingCount: order.remainingCount,
+    filledCount: order.filledCount,
+    priceCents: order.priceCents,
+    createdTime: order.createdTime,
+    updatedTime: order.updatedTime,
+    source: order.source,
+    rawJson: order.rawJson as Prisma.InputJsonValue,
+  }));
+  const positions = dedupeBy(input.positions, (position) => position.marketTicker).map((position) => ({
+    kalshiAccountId,
+    marketTicker: position.marketTicker,
+    eventTicker: position.eventTicker ?? input.fallbackEventTickers.get(position.marketTicker) ?? null,
+    positionContracts: position.positionContracts,
+    totalTraded: position.totalTraded,
+    averagePriceCents: position.averagePriceCents,
+    markPriceCents: position.markPriceCents,
+    exposureCents: position.exposureCents,
+    realizedPnlCents: position.realizedPnlCents,
+    unrealizedPnlCents: position.unrealizedPnlCents,
+    feesPaidCents: position.feesPaidCents,
+    rawJson: position.rawJson as Prisma.InputJsonValue,
+    syncedAt: now,
+  }));
+  const eventPositions = dedupeBy(input.eventPositions, (position) => position.eventTicker).map((position) => ({
+    kalshiAccountId,
+    eventTicker: position.eventTicker,
+    totalCostCents: position.totalCostCents,
+    totalCostShares: position.totalCostShares,
+    eventExposureCents: position.eventExposureCents,
+    realizedPnlCents: position.realizedPnlCents,
+    feesPaidCents: position.feesPaidCents,
+    rawJson: position.rawJson as Prisma.InputJsonValue,
+    syncedAt: now,
+  }));
+  const settlements = dedupeBy(input.settlements, (settlement) => settlement.rawHash).map((settlement) => ({
+    kalshiAccountId,
+    marketTicker: settlement.marketTicker,
+    eventTicker: settlement.eventTicker ?? input.fallbackEventTickers.get(settlement.marketTicker) ?? null,
+    rawHash: settlement.rawHash,
+    settledTime: settlement.settledTime,
+    realizedPnlCents: settlement.realizedPnlCents,
+    revenueCents: settlement.revenueCents,
+    feeCents: settlement.feeCents,
+    rawJson: settlement.rawJson as Prisma.InputJsonValue,
+  }));
+
+  return {
+    balanceSnapshot: {
+      account: { connect: { id: kalshiAccountId } },
+      cashBalanceCents: balanceCashCents(balanceRecord),
+      portfolioValueCents: balancePortfolioValueCents(balanceRecord),
+      rawJson: input.balance as Prisma.InputJsonValue,
+    },
+    events,
+    markets,
+    fills,
+    orders,
+    positions,
+    eventPositions,
+    settlements,
+  };
 }
 
 async function enrichOptionalMetadataBestEffort(args: {
@@ -1561,6 +1552,18 @@ function centsFromDollarFields(record: JsonRecord, dollarKeys: string[], integer
     if (value != null && value !== "") return dollarsToCents(value);
   }
   return centsFromIntegerField(record, integerCentKeys);
+}
+
+function balanceCashCents(record: JsonRecord) {
+  return centsFromIntegerField(record, ["balance", "cash_balance"]) ?? centsFromDollarFields(record, ["balance_dollars", "cash_balance_dollars"]);
+}
+
+function balancePortfolioValueCents(record: JsonRecord) {
+  return centsFromIntegerField(record, ["portfolio_value"]) ?? centsFromDollarFields(record, ["portfolio_value_dollars"]);
+}
+
+function dedupeBy<T>(items: T[], keyFor: (item: T) => string) {
+  return Array.from(new Map(items.map((item) => [keyFor(item), item])).values());
 }
 
 function chunks<T>(items: T[], size: number) {

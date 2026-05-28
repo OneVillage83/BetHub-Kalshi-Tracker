@@ -47,7 +47,9 @@ export function BackfillButton() {
       const stats = payload.data?.stats;
       const latestStatus = payload.data?.status;
 
-      if (latestStatus === "success" && stats) {
+      if (!response.ok) {
+        setMessage(payload.error?.message ?? "Backfill failed. Check the deployment logs and try again.");
+      } else if (latestStatus === "success" && stats) {
         setMessage(`Backfill completed. Imported ${stats.fills + stats.historicalFills} fills, ${stats.orders + stats.historicalOrders} orders, ${stats.positions + (stats.eventPositions ?? 0)} positions, and ${stats.settlements} settlements.`);
       } else if (latestStatus === "running" || payload.data?.continuationRequired) {
         keepPolling = true;
@@ -57,8 +59,6 @@ export function BackfillButton() {
         setMessage(payload.data?.message ?? "Backfill failed. Check the deployment logs and try again.");
       } else if (latestStatus === "stub") {
         setMessage(payload.data?.message ?? "Kalshi credentials are required before backfill.");
-      } else if (!response.ok) {
-        setMessage(payload.error?.message ?? "Backfill failed. Check the deployment logs and try again.");
       } else {
         keepPolling = true;
         setMessage("Backfill is still running...");

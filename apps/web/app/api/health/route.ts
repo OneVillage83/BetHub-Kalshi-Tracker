@@ -20,14 +20,14 @@ export async function GET() {
   if (databaseSchemaReady) {
     await getPrisma().$queryRaw`SELECT 1`;
     databaseLatencyMs = Date.now() - startedAt;
-    const [lastScheduledSync, lastSuccessfulSync, latestFailedSync] = await Promise.all([
+    const [lastScheduledSync, lastSuccessfulSync, latestSync] = await Promise.all([
       getPrisma().syncRun.findFirst({ where: { source: "netlify-scheduled" }, orderBy: { startedAt: "desc" } }),
       getPrisma().syncRun.findFirst({ where: { status: "success" }, orderBy: { completedAt: "desc" } }),
-      getPrisma().syncRun.findFirst({ where: { status: "failed" }, orderBy: { startedAt: "desc" } }),
+      getPrisma().syncRun.findFirst({ orderBy: { startedAt: "desc" } }),
     ]);
     lastScheduledSyncAt = lastScheduledSync?.completedAt?.toISOString() ?? lastScheduledSync?.startedAt.toISOString() ?? null;
     lastSuccessfulSyncAt = lastSuccessfulSync?.completedAt?.toISOString() ?? null;
-    lastError = latestFailedSync?.errorMessage ?? null;
+    lastError = latestSync?.status === "failed" ? (latestSync.errorMessage ?? null) : null;
   }
 
   return apiResponse({

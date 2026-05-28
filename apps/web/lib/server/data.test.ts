@@ -34,6 +34,7 @@ describe("dashboard summary", () => {
 
     expect(summary.bankrollCents).toBe(28183);
     expect(summary.cashBalanceCents).toBe(27015);
+    expect(summary.portfolioValueCents).toBe(1168);
     expect(summary.openExposureCents).toBe(1168);
     expect(summary.activePositions).toBe(1);
     expect(summary.realizedPnlCents).toBe(250);

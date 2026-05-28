@@ -2,10 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   applyBackfillProgress,
   BACKFILL_STALE_MS,
+  buildCoreBackfillImportPayload,
   buildMissingCredentialsBackfillStats,
   fetchOptionalEventMetadata,
   isBackfillProgressStale,
   isRecoverableCoreImportStats,
+  type NormalizedEventPosition,
+  type NormalizedFill,
+  type NormalizedOrder,
+  type NormalizedPosition,
+  type NormalizedSettlement,
 } from "./backfill";
 
 describe("backfill progress helpers", () => {
@@ -96,5 +102,127 @@ describe("backfill progress helpers", () => {
         counts: { balanceSnapshots: 1 },
       }),
     ).toBe(true);
+  });
+
+  it("builds a deduped batched import payload with event positions and placeholder references", () => {
+    const createdTime = new Date("2026-05-28T12:00:00.000Z");
+    const fills: NormalizedFill[] = [
+      {
+        fillId: "fill-1",
+        tradeId: "trade-1",
+        orderId: "order-1",
+        marketTicker: "KXMARKET-1",
+        eventTicker: "KXEVENT-1",
+        outcomeSide: "yes",
+        action: "buy",
+        contractCount: "2",
+        priceCents: 40,
+        feeCents: 1,
+        createdTime,
+        source: "portfolio",
+        rawJson: { fill_id: "fill-1" },
+      },
+      {
+        fillId: "fill-1",
+        tradeId: "trade-1",
+        orderId: "order-1",
+        marketTicker: "KXMARKET-1",
+        eventTicker: "KXEVENT-1",
+        outcomeSide: "yes",
+        action: "buy",
+        contractCount: "2",
+        priceCents: 40,
+        feeCents: 1,
+        createdTime,
+        source: "historical",
+        rawJson: { fill_id: "fill-1", source: "historical" },
+      },
+    ];
+    const orders: NormalizedOrder[] = [
+      {
+        orderId: "order-1",
+        marketTicker: "KXMARKET-1",
+        eventTicker: "KXEVENT-1",
+        outcomeSide: "yes",
+        action: "buy",
+        status: "executed",
+        originalCount: "2",
+        remainingCount: "0",
+        filledCount: "2",
+        priceCents: 40,
+        createdTime,
+        updatedTime: createdTime,
+        source: "portfolio",
+        rawJson: { order_id: "order-1" },
+      },
+    ];
+    const positions: NormalizedPosition[] = [
+      {
+        marketTicker: "KXMARKET-1",
+        eventTicker: "KXEVENT-1",
+        positionContracts: "1",
+        totalTraded: "2",
+        averagePriceCents: 40,
+        markPriceCents: 20,
+        exposureCents: 20,
+        realizedPnlCents: 0,
+        unrealizedPnlCents: null,
+        feesPaidCents: 1,
+        rawJson: { ticker: "KXMARKET-1" },
+      },
+    ];
+    const eventPositions: NormalizedEventPosition[] = [
+      {
+        eventTicker: "KXCOMBO",
+        totalCostCents: 1233,
+        totalCostShares: "59",
+        eventExposureCents: 1168,
+        realizedPnlCents: 0,
+        feesPaidCents: 0,
+        rawJson: { event_ticker: "KXCOMBO" },
+      },
+    ];
+    const settlements: NormalizedSettlement[] = [
+      {
+        marketTicker: "KXMARKET-1",
+        eventTicker: "KXEVENT-1",
+        rawHash: "hash-1",
+        settledTime: null,
+        realizedPnlCents: null,
+        revenueCents: null,
+        feeCents: null,
+        rawJson: { market_ticker: "KXMARKET-1" },
+      },
+      {
+        marketTicker: "KXMARKET-1",
+        eventTicker: "KXEVENT-1",
+        rawHash: "hash-1",
+        settledTime: null,
+        realizedPnlCents: null,
+        revenueCents: null,
+        feeCents: null,
+        rawJson: { market_ticker: "KXMARKET-1", duplicate: true },
+      },
+    ];
+
+    const payload = buildCoreBackfillImportPayload("acct-1", {
+      balance: { balance: 27015, portfolio_value: 1168 },
+      fills,
+      orders,
+      positions,
+      eventPositions,
+      settlements,
+      fallbackEventTickers: new Map([["KXMARKET-1", "KXEVENT-1"]]),
+    });
+
+    expect(payload.balanceSnapshot.cashBalanceCents).toBe(27015);
+    expect(payload.balanceSnapshot.portfolioValueCents).toBe(1168);
+    expect(payload.events.map((event) => event.ticker).sort()).toEqual(["KXCOMBO", "KXEVENT-1"]);
+    expect(payload.markets).toHaveLength(1);
+    expect(payload.fills).toHaveLength(1);
+    expect(payload.orders).toHaveLength(1);
+    expect(payload.positions).toHaveLength(1);
+    expect(payload.eventPositions).toHaveLength(1);
+    expect(payload.settlements).toHaveLength(1);
   });
 });
