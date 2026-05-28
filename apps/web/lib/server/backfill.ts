@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { getPrisma } from "@kalshi-tracker/db";
 import { KalshiRestClient, dollarsToCents, normalizeOrderStatus, normalizeOutcomeSide, parseFixedPoint } from "@kalshi-tracker/kalshi-client";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { STUB_REASON_AWAITING_KALSHI } from "../env";
 import type { AuthenticatedAppUser } from "../auth";
 import { buildKalshiClientForAppUser, getKalshiCredentialStatus } from "./kalshi-credentials";
@@ -25,7 +25,8 @@ export type BackfillProgressStage =
 export const BACKFILL_STALE_MS = 3 * 60 * 1000;
 const BACKFILL_SOFT_BUDGET_MS = 18 * 1000;
 const MARKET_METADATA_CHUNK_SIZE = 20;
-const EVENT_METADATA_CHUNK_SIZE = 5;
+const EVENT_METADATA_DELAY_MS = 250;
+const METADATA_RETRY_DELAYS_MS = [750, 2000, 5000];
 
 export type BackfillCounts = {
   balanceSnapshots: number;
@@ -168,6 +169,27 @@ type BackfillOptions = {
   softBudgetMs?: number;
 };
 
+type BackfillCursor = {
+  continuationRequired: true;
+  reason: "soft_time_budget";
+  stage: "market_metadata";
+  marketTickers: string[];
+  fallbackEventPairs: Array<[string, string | null]>;
+  marketIndex: number;
+  eventTickers: string[];
+  eventIndex: number;
+  updatedAt: string;
+};
+
+type RunningSyncRun = {
+  id: string;
+  appUserId: string;
+  kalshiAccountId: string | null;
+  stats: Prisma.JsonValue | null;
+  cursor: Prisma.JsonValue | null;
+  completedAt: Date | null;
+};
+
 export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: BackfillOptions = {}) {
   const credentialStatus = await getKalshiCredentialStatus(appUser.id);
   if (!credentialStatus.configured) {
@@ -181,6 +203,7 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
     where: { appUserId: appUser.id, status: "running" },
     orderBy: { startedAt: "desc" },
   });
+  if (activeRun && options.kind === "backfill-continue") return continueRunningBackfill(appUser, activeRun, options);
   if (activeRun && !options.replaceActiveRun) return runningSyncRunResponse(activeRun);
   if (activeRun && options.replaceActiveRun) {
     await failRunningSyncRuns(appUser.id, "Backfill resumed in a fresh request.");
@@ -188,7 +211,7 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
 
   const startedAt = Date.now();
   const softBudgetMs = options.softBudgetMs ?? BACKFILL_SOFT_BUDGET_MS;
-  const allowContinuation = options.allowContinuation ?? options.kind !== "backfill-continue";
+  const allowContinuation = options.allowContinuation ?? true;
   const { client, accountId } = await buildKalshiClientForAppUser(appUser);
   const account = await prisma.kalshiAccount.findUniqueOrThrow({ where: { id: accountId } });
   const syncRun = await prisma.syncRun.create({
@@ -202,24 +225,7 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
     },
   });
 
-  const stats: ImportStats = {
-    balanceSnapshots: 0,
-    fills: 0,
-    historicalFills: 0,
-    orders: 0,
-    historicalOrders: 0,
-    positions: 0,
-    settlements: 0,
-    markets: 0,
-    events: 0,
-    skippedRows: 0,
-    warnings: [],
-    stage: "credentials",
-    stageLabel: BACKFILL_STAGE_DETAILS.credentials.stageLabel,
-    percent: BACKFILL_STAGE_DETAILS.credentials.percent,
-    counts: emptyBackfillCounts(),
-    updatedAt: new Date().toISOString(),
-  };
+  const stats = emptyImportStats("credentials");
 
   try {
     await updateBackfillProgress(prisma, syncRun.id, stats, "credentials");
@@ -265,41 +271,10 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
     stats.positions = normalizedPositions.length;
     stats.settlements = normalizedSettlements.length;
 
-    await updateBackfillProgress(prisma, syncRun.id, stats, "market_metadata");
-    let shouldContinueLater = false;
-    const shouldPauseForContinuation = () => {
-      const shouldPause = Date.now() - startedAt > softBudgetMs;
-      shouldContinueLater ||= shouldPause;
-      return shouldPause;
-    };
-    const marketsByTicker = await fetchMarketMetadata(client, marketTickers, stats.warnings, {
-      onProgress: async (processed, total) => {
-        stats.markets = processed;
-        applyBackfillProgress(stats, "market_metadata");
-        stats.percent = total > 0 ? Math.min(92, 86 + Math.round((processed / total) * 6)) : stats.percent;
-        await saveBackfillStats(prisma, syncRun.id, stats);
-      },
-      shouldStop: shouldPauseForContinuation,
-    });
-    if (shouldContinueLater && allowContinuation) return createContinuationResponse(prisma, syncRun.id, stats);
-    const eventTickers = collectEventTickers(marketsByTicker, fallbackEventTickers);
-    const eventsByTicker = await fetchEventMetadata(client, Array.from(eventTickers), stats.warnings, {
-      onProgress: async (processed, total) => {
-        stats.events = processed;
-        applyBackfillProgress(stats, "market_metadata");
-        stats.percent = total > 0 ? Math.min(93, 92 + Math.round((processed / total) * 1)) : stats.percent;
-        await saveBackfillStats(prisma, syncRun.id, stats);
-      },
-      shouldStop: shouldPauseForContinuation,
-    });
-    if (shouldContinueLater && allowContinuation) return createContinuationResponse(prisma, syncRun.id, stats);
-
-    await ensureEvents(eventsByTicker, eventTickers);
-    stats.events = eventTickers.size;
-    await ensureMarkets(marketsByTicker, fallbackEventTickers, eventsByTicker);
-    stats.markets = marketTickers.length;
-
     await updateBackfillProgress(prisma, syncRun.id, stats, "database_import");
+    const fallbackEventTickerSet = new Set(Array.from(fallbackEventTickers.values()).filter((ticker): ticker is string => Boolean(ticker)));
+    await ensureEvents(new Map(), fallbackEventTickerSet);
+    await ensureMarkets(new Map(), fallbackEventTickers, new Map());
 
     await prisma.balanceSnapshot.create({
       data: {
@@ -312,7 +287,6 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
     stats.balanceSnapshots = 1;
 
     for (const fill of normalizedFills) {
-      const market = marketsByTicker.get(fill.marketTicker);
       await prisma.fill.upsert({
         where: {
           kalshiAccountId_fillId: {
@@ -326,7 +300,7 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
           tradeId: fill.tradeId,
           orderId: fill.orderId,
           marketTicker: fill.marketTicker,
-          eventTicker: fill.eventTicker ?? market?.eventTicker ?? fallbackEventTickers.get(fill.marketTicker) ?? null,
+          eventTicker: fill.eventTicker ?? fallbackEventTickers.get(fill.marketTicker) ?? null,
           outcomeSide: fill.outcomeSide,
           action: fill.action,
           contractCount: fill.contractCount,
@@ -339,7 +313,7 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
         update: {
           tradeId: fill.tradeId,
           orderId: fill.orderId,
-          eventTicker: fill.eventTicker ?? market?.eventTicker ?? fallbackEventTickers.get(fill.marketTicker) ?? null,
+          eventTicker: fill.eventTicker ?? fallbackEventTickers.get(fill.marketTicker) ?? null,
           outcomeSide: fill.outcomeSide,
           action: fill.action,
           contractCount: fill.contractCount,
@@ -352,7 +326,6 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
       });
     }
     for (const order of normalizedOrders) {
-      const market = marketsByTicker.get(order.marketTicker);
       await prisma.order.upsert({
         where: {
           kalshiAccountId_orderId: {
@@ -364,7 +337,7 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
           kalshiAccountId: account.id,
           orderId: order.orderId,
           marketTicker: order.marketTicker,
-          eventTicker: order.eventTicker ?? market?.eventTicker ?? fallbackEventTickers.get(order.marketTicker) ?? null,
+          eventTicker: order.eventTicker ?? fallbackEventTickers.get(order.marketTicker) ?? null,
           outcomeSide: order.outcomeSide,
           action: order.action,
           status: order.status,
@@ -378,7 +351,7 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
           rawJson: order.rawJson as Prisma.InputJsonValue,
         },
         update: {
-          eventTicker: order.eventTicker ?? market?.eventTicker ?? fallbackEventTickers.get(order.marketTicker) ?? null,
+          eventTicker: order.eventTicker ?? fallbackEventTickers.get(order.marketTicker) ?? null,
           outcomeSide: order.outcomeSide,
           action: order.action,
           status: order.status,
@@ -394,7 +367,6 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
       });
     }
     for (const position of normalizedPositions) {
-      const market = marketsByTicker.get(position.marketTicker);
       await prisma.position.upsert({
         where: {
           kalshiAccountId_marketTicker: {
@@ -405,7 +377,7 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
         create: {
           kalshiAccountId: account.id,
           marketTicker: position.marketTicker,
-          eventTicker: position.eventTicker ?? market?.eventTicker ?? fallbackEventTickers.get(position.marketTicker) ?? null,
+          eventTicker: position.eventTicker ?? fallbackEventTickers.get(position.marketTicker) ?? null,
           positionContracts: position.positionContracts,
           totalTraded: position.totalTraded,
           averagePriceCents: position.averagePriceCents,
@@ -417,7 +389,7 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
           rawJson: position.rawJson as Prisma.InputJsonValue,
         },
         update: {
-          eventTicker: position.eventTicker ?? market?.eventTicker ?? fallbackEventTickers.get(position.marketTicker) ?? null,
+          eventTicker: position.eventTicker ?? fallbackEventTickers.get(position.marketTicker) ?? null,
           positionContracts: position.positionContracts,
           totalTraded: position.totalTraded,
           averagePriceCents: position.averagePriceCents,
@@ -432,7 +404,6 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
       });
     }
     for (const settlement of normalizedSettlements) {
-      const market = marketsByTicker.get(settlement.marketTicker);
       await prisma.settlement.upsert({
         where: {
           kalshiAccountId_rawHash: {
@@ -443,7 +414,7 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
         create: {
           kalshiAccountId: account.id,
           marketTicker: settlement.marketTicker,
-          eventTicker: settlement.eventTicker ?? market?.eventTicker ?? fallbackEventTickers.get(settlement.marketTicker) ?? null,
+          eventTicker: settlement.eventTicker ?? fallbackEventTickers.get(settlement.marketTicker) ?? null,
           rawHash: settlement.rawHash,
           settledTime: settlement.settledTime,
           realizedPnlCents: settlement.realizedPnlCents,
@@ -452,7 +423,7 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
           rawJson: settlement.rawJson as Prisma.InputJsonValue,
         },
         update: {
-          eventTicker: settlement.eventTicker ?? market?.eventTicker ?? fallbackEventTickers.get(settlement.marketTicker) ?? null,
+          eventTicker: settlement.eventTicker ?? fallbackEventTickers.get(settlement.marketTicker) ?? null,
           settledTime: settlement.settledTime,
           realizedPnlCents: settlement.realizedPnlCents,
           revenueCents: settlement.revenueCents,
@@ -461,54 +432,63 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
         },
       });
     }
-    await updateBackfillProgress(prisma, syncRun.id, stats, "complete");
 
-    await prisma.syncRun.update({
-      where: { id: syncRun.id },
-      data: {
-        status: "success",
-        completedAt: new Date(),
-        lockedAt: null,
-        stats: stats as unknown as Prisma.InputJsonValue,
-      },
+    const continuationCursor = await enrichOptionalMetadata({
+      prisma,
+      client,
+      syncRunId: syncRun.id,
+      stats,
+      fallbackEventTickers,
+      startedAt,
+      softBudgetMs,
+      allowContinuation,
     });
-
-    await prisma.kalshiAccount.update({
-      where: { id: account.id },
-      data: {
-        lastSyncAt: new Date(),
-        syncCursor: { lastCompletedSyncRunId: syncRun.id, lastCompletedAt: new Date().toISOString() },
-      },
-    });
-
-    return {
-      data: {
-        id: syncRun.id,
-        status: "success",
-        completedAt: new Date().toISOString(),
-        message: "Kalshi backfill imported successfully.",
-        stats,
-      },
-      meta: { source: "db" as const },
-    };
+    if (continuationCursor) return createContinuationResponse(prisma, syncRun.id, stats, continuationCursor);
+    return finishBackfillSuccess(prisma, syncRun.id, account.id, stats);
   } catch (error) {
-    const message = publicBackfillError(error);
-    applyBackfillProgress(stats, "failed");
-    await prisma.syncRun.update({
-      where: { id: syncRun.id },
-      data: {
-        status: "failed",
-        completedAt: new Date(),
-        lockedAt: null,
-        errorMessage: message,
-        stats: {
-          ...stats,
-          failure: message,
-        } as unknown as Prisma.InputJsonValue,
-      },
-    });
+    return failBackfillRun(prisma, syncRun.id, stats, error);
+  }
+}
 
-    throw new Error(message);
+async function continueRunningBackfill(appUser: AuthenticatedAppUser, syncRun: RunningSyncRun, options: BackfillOptions) {
+  const cursor = backfillCursorFromJson(syncRun.cursor);
+  if (!cursor) return runningSyncRunResponse(syncRun);
+
+  const prisma = getPrisma();
+  const startedAt = Date.now();
+  const softBudgetMs = options.softBudgetMs ?? BACKFILL_SOFT_BUDGET_MS;
+  const allowContinuation = options.allowContinuation ?? true;
+  const { client, accountId } = await buildKalshiClientForAppUser(appUser);
+  const kalshiAccountId = syncRun.kalshiAccountId ?? accountId;
+  const stats = importStatsFromJson(syncRun.stats);
+  stats.continuationRequired = false;
+  stats.stage = "market_metadata";
+  stats.stageLabel = BACKFILL_STAGE_DETAILS.market_metadata.stageLabel;
+
+  await prisma.syncRun.update({
+    where: { id: syncRun.id },
+    data: {
+      lockedAt: new Date(),
+      errorMessage: null,
+    },
+  });
+
+  try {
+    const continuationCursor = await enrichOptionalMetadata({
+      prisma,
+      client,
+      syncRunId: syncRun.id,
+      stats,
+      fallbackEventTickers: new Map(cursor.fallbackEventPairs),
+      startedAt,
+      softBudgetMs,
+      allowContinuation,
+      cursor,
+    });
+    if (continuationCursor) return createContinuationResponse(prisma, syncRun.id, stats, continuationCursor);
+    return finishBackfillSuccess(prisma, syncRun.id, kalshiAccountId, stats);
+  } catch (error) {
+    return failBackfillRun(prisma, syncRun.id, stats, error);
   }
 }
 
@@ -578,20 +558,16 @@ async function createMissingCredentialsSyncRun(appUserId: string) {
   };
 }
 
-async function createContinuationResponse(prisma: ReturnType<typeof getPrisma>, syncRunId: string, stats: ImportStats) {
+async function createContinuationResponse(prisma: ReturnType<typeof getPrisma>, syncRunId: string, stats: ImportStats, cursor: BackfillCursor) {
   stats.continuationRequired = true;
   stats.stageLabel = "Backfill is still running; continuing in another request";
   stats.updatedAt = new Date().toISOString();
+  cursor.updatedAt = stats.updatedAt;
   await prisma.syncRun.update({
     where: { id: syncRunId },
     data: {
       lockedAt: null,
-      cursor: {
-        continuationRequired: true,
-        reason: "soft_time_budget",
-        stage: stats.stage,
-        updatedAt: stats.updatedAt,
-      } as Prisma.InputJsonValue,
+      cursor: cursor as Prisma.InputJsonValue,
       stats: stats as unknown as Prisma.InputJsonValue,
     },
   });
@@ -609,7 +585,67 @@ async function createContinuationResponse(prisma: ReturnType<typeof getPrisma>, 
   };
 }
 
-function runningSyncRunResponse(syncRun: { id: string; stats: Prisma.JsonValue; cursor: Prisma.JsonValue; completedAt: Date | null }) {
+async function finishBackfillSuccess(prisma: ReturnType<typeof getPrisma>, syncRunId: string, kalshiAccountId: string, stats: ImportStats) {
+  stats.continuationRequired = false;
+  await updateBackfillProgress(prisma, syncRunId, stats, "complete");
+
+  await prisma.syncRun.update({
+    where: { id: syncRunId },
+    data: {
+      status: "success",
+      completedAt: new Date(),
+      lockedAt: null,
+      cursor: Prisma.JsonNull,
+      stats: stats as unknown as Prisma.InputJsonValue,
+    },
+  });
+
+  await prisma.kalshiAccount.update({
+    where: { id: kalshiAccountId },
+    data: {
+      lastSyncAt: new Date(),
+      syncCursor: { lastCompletedSyncRunId: syncRunId, lastCompletedAt: new Date().toISOString() },
+    },
+  });
+
+  return {
+    data: {
+      id: syncRunId,
+      status: "success",
+      completedAt: new Date().toISOString(),
+      message: "Kalshi backfill imported successfully.",
+      stats,
+    },
+    meta: { source: "db" as const },
+  };
+}
+
+async function failBackfillRun(
+  prisma: ReturnType<typeof getPrisma>,
+  syncRunId: string,
+  stats: ImportStats,
+  error: unknown,
+): Promise<never> {
+  const message = publicBackfillError(error);
+  applyBackfillProgress(stats, "failed");
+  await prisma.syncRun.update({
+    where: { id: syncRunId },
+    data: {
+      status: "failed",
+      completedAt: new Date(),
+      lockedAt: null,
+      errorMessage: message,
+      stats: {
+        ...stats,
+        failure: message,
+      } as unknown as Prisma.InputJsonValue,
+    },
+  });
+
+  throw new Error(message);
+}
+
+function runningSyncRunResponse(syncRun: RunningSyncRun) {
   const stats = asStatsRecord(syncRun.stats);
   const cursor = asStatsRecord(syncRun.cursor);
   return {
@@ -635,6 +671,60 @@ async function failRunningSyncRuns(appUserId: string, reason: string) {
       errorMessage: reason,
     },
   });
+}
+
+function emptyImportStats(stage: BackfillProgressStage): ImportStats {
+  const counts = emptyBackfillCounts();
+  const detail = BACKFILL_STAGE_DETAILS[stage];
+  return {
+    ...counts,
+    warnings: [],
+    stage,
+    stageLabel: detail.stageLabel,
+    percent: detail.percent,
+    counts,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function importStatsFromJson(value: unknown): ImportStats {
+  const row = asStatsRecord(value);
+  const counts = countsFromStatsRecord(row);
+  const stage = backfillStageFromValue(row?.stage) ?? "market_metadata";
+  const detail = BACKFILL_STAGE_DETAILS[stage];
+  return {
+    ...counts,
+    warnings: Array.isArray(row?.warnings) ? row.warnings.filter((warning): warning is string => typeof warning === "string") : [],
+    stage,
+    stageLabel: typeof row?.stageLabel === "string" ? row.stageLabel : detail.stageLabel,
+    percent: typeof row?.percent === "number" ? row.percent : detail.percent,
+    counts,
+    updatedAt: typeof row?.updatedAt === "string" ? row.updatedAt : new Date().toISOString(),
+    continuationRequired: row?.continuationRequired === true,
+  };
+}
+
+function backfillCursorFromJson(value: unknown): BackfillCursor | null {
+  const row = asStatsRecord(value);
+  if (!row || row.continuationRequired !== true || row.stage !== "market_metadata") return null;
+  const marketTickers = stringArray(row.marketTickers);
+  const fallbackEventPairs = fallbackPairsFromValue(row.fallbackEventPairs);
+  const eventTickers = stringArray(row.eventTickers);
+  const marketIndex = nonNegativeInteger(row.marketIndex);
+  const eventIndex = nonNegativeInteger(row.eventIndex);
+  if (!marketTickers.length && !eventTickers.length) return null;
+
+  return {
+    continuationRequired: true,
+    reason: "soft_time_budget",
+    stage: "market_metadata",
+    marketTickers,
+    fallbackEventPairs,
+    marketIndex,
+    eventTickers,
+    eventIndex,
+    updatedAt: typeof row.updatedAt === "string" ? row.updatedAt : new Date().toISOString(),
+  };
 }
 
 export function emptyBackfillCounts(): BackfillCounts {
@@ -909,35 +999,97 @@ function collectFallbackEventTickers(
   return fallbackEventTickers;
 }
 
-async function fetchMarketMetadata(
-  client: KalshiRestClient,
-  tickers: string[],
-  warnings: string[],
-  options: {
-    onProgress?: (processed: number, total: number) => Promise<void>;
-    shouldStop?: () => boolean;
-  } = {},
-) {
-  const marketsByTicker = new Map<string, MarketMetadata>();
+async function enrichOptionalMetadata(args: {
+  prisma: ReturnType<typeof getPrisma>;
+  client: KalshiRestClient;
+  syncRunId: string;
+  stats: ImportStats;
+  fallbackEventTickers: Map<string, string | null>;
+  startedAt: number;
+  softBudgetMs: number;
+  allowContinuation: boolean;
+  cursor?: BackfillCursor;
+}) {
+  const marketTickers = args.cursor?.marketTickers ?? Array.from(args.fallbackEventTickers.keys());
+  const fallbackEventPairs = args.cursor?.fallbackEventPairs ?? Array.from(args.fallbackEventTickers.entries());
+  const eventTickerSet = new Set(args.cursor?.eventTickers ?? Array.from(args.fallbackEventTickers.values()).filter((ticker): ticker is string => Boolean(ticker)));
+  let marketIndex = args.cursor?.marketIndex ?? 0;
+  let eventIndex = args.cursor?.eventIndex ?? 0;
 
-  for (const chunk of chunks(tickers, MARKET_METADATA_CHUNK_SIZE)) {
-    try {
-      const response = await client.getMarketsByTickers(chunk);
-      for (const rawMarket of arrayFrom(asRecord(response), "markets")) {
+  await updateBackfillProgress(args.prisma, args.syncRunId, args.stats, "market_metadata");
+
+  while (marketIndex < marketTickers.length) {
+    if (shouldPauseForContinuation(args.startedAt, args.softBudgetMs)) {
+      pushWarningOnce(args.stats.warnings, "market metadata: paused before the Netlify function time limit");
+      if (!args.allowContinuation) return null;
+      return buildBackfillCursor(marketTickers, fallbackEventPairs, marketIndex, Array.from(eventTickerSet).slice(0, 100), eventIndex);
+    }
+
+    const chunk = marketTickers.slice(marketIndex, marketIndex + MARKET_METADATA_CHUNK_SIZE);
+    const result = await fetchOptionalMarketMetadata(args.client, chunk);
+    if (result.status === "rate_limited") {
+      pushWarningOnce(args.stats.warnings, "Kalshi rate-limited optional market metadata; core import continues.");
+      await saveBackfillStats(args.prisma, args.syncRunId, args.stats);
+      return null;
+    }
+    if (result.status !== "ok") {
+      pushWarningOnce(args.stats.warnings, `market metadata: ${result.message}`);
+    } else {
+      const marketsByTicker = new Map<string, MarketMetadata>();
+      const chunkEventTickers = new Set<string>();
+      for (const rawMarket of arrayFrom(asRecord(result.value), "markets")) {
         const market = normalizeMarket(rawMarket);
-        if (market) marketsByTicker.set(market.ticker, market);
+        if (!market) continue;
+        marketsByTicker.set(market.ticker, market);
+        if (market.eventTicker) {
+          eventTickerSet.add(market.eventTicker);
+          chunkEventTickers.add(market.eventTicker);
+        }
       }
-    } catch (error) {
-      warnings.push(`market metadata: ${publicBackfillError(error)}`);
+      await ensureEvents(new Map(), chunkEventTickers);
+      await ensureMarkets(marketsByTicker, subsetFallbackEventTickers(args.fallbackEventTickers, chunk), new Map());
     }
-    await options.onProgress?.(marketsByTicker.size, tickers.length);
-    if (options.shouldStop?.()) {
-      warnings.push("market metadata: paused before the Netlify function time limit");
-      break;
-    }
+
+    marketIndex = Math.min(marketTickers.length, marketIndex + chunk.length);
+    args.stats.markets = marketIndex;
+    applyBackfillProgress(args.stats, "market_metadata");
+    args.stats.percent = marketTickers.length > 0 ? Math.min(92, 86 + Math.round((marketIndex / marketTickers.length) * 6)) : args.stats.percent;
+    await saveBackfillStats(args.prisma, args.syncRunId, args.stats);
   }
 
-  return marketsByTicker;
+  const cappedEventTickers = Array.from(eventTickerSet).slice(0, 100);
+  if (eventTickerSet.size > 100) pushWarningOnce(args.stats.warnings, `event metadata: skipped ${eventTickerSet.size - 100} events after the first 100`);
+  if (args.cursor?.eventTickers?.length) eventIndex = Math.min(eventIndex, args.cursor.eventTickers.length);
+
+  while (eventIndex < cappedEventTickers.length) {
+    if (shouldPauseForContinuation(args.startedAt, args.softBudgetMs)) {
+      pushWarningOnce(args.stats.warnings, "event metadata: paused before the Netlify function time limit");
+      if (!args.allowContinuation) return null;
+      return buildBackfillCursor(marketTickers, fallbackEventPairs, marketIndex, cappedEventTickers, eventIndex);
+    }
+
+    const eventTicker = cappedEventTickers[eventIndex];
+    const result = await fetchOptionalEventMetadata(args.client, eventTicker);
+    if (result.status === "rate_limited") {
+      pushWarningOnce(args.stats.warnings, "Kalshi rate-limited optional event metadata; core import continues.");
+      await saveBackfillStats(args.prisma, args.syncRunId, args.stats);
+      return null;
+    }
+    if (result.status === "ok" && result.value) {
+      await ensureEvents(new Map([[result.value.ticker, result.value]]), new Set([result.value.ticker]));
+    } else if (result.status !== "ok") {
+      pushWarningOnce(args.stats.warnings, `event metadata: ${result.message}`);
+    }
+
+    eventIndex += 1;
+    args.stats.events = eventIndex;
+    applyBackfillProgress(args.stats, "market_metadata");
+    args.stats.percent = cappedEventTickers.length > 0 ? Math.min(93, 92 + Math.round((eventIndex / cappedEventTickers.length) * 1)) : args.stats.percent;
+    await saveBackfillStats(args.prisma, args.syncRunId, args.stats);
+    if (eventIndex < cappedEventTickers.length) await sleep(EVENT_METADATA_DELAY_MS);
+  }
+
+  return null;
 }
 
 function normalizeMarket(rawMarket: unknown): MarketMetadata | null {
@@ -966,50 +1118,46 @@ function normalizeMarket(rawMarket: unknown): MarketMetadata | null {
   };
 }
 
-function collectEventTickers(marketsByTicker: Map<string, MarketMetadata>, fallbackEventTickers: Map<string, string | null>) {
-  const eventTickers = new Set<string>();
-  for (const market of marketsByTicker.values()) {
-    if (market.eventTicker) eventTickers.add(market.eventTicker);
-  }
-  for (const eventTicker of fallbackEventTickers.values()) {
-    if (eventTicker) eventTickers.add(eventTicker);
-  }
-  return eventTickers;
+type OptionalMetadataResult<T> =
+  | { status: "ok"; value: T }
+  | { status: "rate_limited"; message: string }
+  | { status: "not_found"; message: string }
+  | { status: "error"; message: string };
+
+async function fetchOptionalMarketMetadata(
+  client: Pick<KalshiRestClient, "getMarketsByTickers">,
+  tickers: string[],
+  retryDelaysMs = METADATA_RETRY_DELAYS_MS,
+): Promise<OptionalMetadataResult<unknown>> {
+  return readOptionalKalshiMetadata(() => client.getMarketsByTickers(tickers), retryDelaysMs);
 }
 
-async function fetchEventMetadata(
-  client: KalshiRestClient,
-  eventTickers: string[],
-  warnings: string[],
-  options: {
-    onProgress?: (processed: number, total: number) => Promise<void>;
-    shouldStop?: () => boolean;
-  } = {},
-) {
-  const eventsByTicker = new Map<string, EventMetadata>();
-  const cappedEventTickers = eventTickers.slice(0, 100);
+export async function fetchOptionalEventMetadata(
+  client: Pick<KalshiRestClient, "getEvent">,
+  eventTicker: string,
+  retryDelaysMs = METADATA_RETRY_DELAYS_MS,
+): Promise<OptionalMetadataResult<EventMetadata | null>> {
+  const result = await readOptionalKalshiMetadata(() => client.getEvent(eventTicker), retryDelaysMs);
+  if (result.status !== "ok") return result;
+  return { status: "ok", value: normalizeEvent(asRecord(asRecord(result.value).event ?? result.value)) };
+}
 
-  for (const chunk of chunks(cappedEventTickers, EVENT_METADATA_CHUNK_SIZE)) {
-    const results = await Promise.allSettled(
-      chunk.map(async (eventTicker) => {
-        const response = await client.getEvent(eventTicker);
-        const event = normalizeEvent(asRecord(response).event ?? response);
-        if (event) eventsByTicker.set(event.ticker, event);
-      }),
-    );
-
-    for (const result of results) {
-      if (result.status === "rejected") warnings.push(`event metadata: ${publicBackfillError(result.reason)}`);
-    }
-    await options.onProgress?.(eventsByTicker.size, cappedEventTickers.length);
-    if (options.shouldStop?.()) {
-      warnings.push("event metadata: paused before the Netlify function time limit");
-      break;
+async function readOptionalKalshiMetadata<T>(loader: () => Promise<T>, retryDelaysMs: number[]): Promise<OptionalMetadataResult<T>> {
+  for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
+    try {
+      return { status: "ok", value: await loader() };
+    } catch (error) {
+      if (isKalshiRateLimitError(error) && attempt < retryDelaysMs.length) {
+        await sleep(retryDelaysMs[attempt]);
+        continue;
+      }
+      if (isKalshiRateLimitError(error)) return { status: "rate_limited", message: "Kalshi rate-limited optional metadata; core import continues." };
+      if (isKalshiNotFoundError(error)) return { status: "not_found", message: publicBackfillError(error) };
+      return { status: "error", message: publicBackfillError(error) };
     }
   }
 
-  if (eventTickers.length > 100) warnings.push(`event metadata: skipped ${eventTickers.length - 100} events after the first 100`);
-  return eventsByTicker;
+  return { status: "error", message: "Unknown optional metadata error." };
 }
 
 function normalizeEvent(rawEvent: unknown): EventMetadata | null {
@@ -1104,6 +1252,40 @@ async function ensureMarkets(
   }
 }
 
+function subsetFallbackEventTickers(fallbackEventTickers: Map<string, string | null>, marketTickers: string[]) {
+  const subset = new Map<string, string | null>();
+  for (const ticker of marketTickers) subset.set(ticker, fallbackEventTickers.get(ticker) ?? null);
+  return subset;
+}
+
+function shouldPauseForContinuation(startedAt: number, softBudgetMs: number) {
+  return Date.now() - startedAt > softBudgetMs;
+}
+
+function buildBackfillCursor(
+  marketTickers: string[],
+  fallbackEventPairs: Array<[string, string | null]>,
+  marketIndex: number,
+  eventTickers: string[],
+  eventIndex: number,
+): BackfillCursor {
+  return {
+    continuationRequired: true,
+    reason: "soft_time_budget",
+    stage: "market_metadata",
+    marketTickers,
+    fallbackEventPairs,
+    marketIndex,
+    eventTickers,
+    eventIndex,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function pushWarningOnce(warnings: string[], warning: string) {
+  if (!warnings.includes(warning)) warnings.push(warning);
+}
+
 function asRecord(value: unknown): JsonRecord {
   if (value && typeof value === "object" && !Array.isArray(value)) return value as JsonRecord;
   return {};
@@ -1196,6 +1378,68 @@ function chunks<T>(items: T[], size: number) {
   return result;
 }
 
+function countsFromStatsRecord(row: Record<string, unknown> | null): BackfillCounts {
+  const counts = asStatsRecord(row?.counts) ?? row;
+  return {
+    balanceSnapshots: numberField(counts?.balanceSnapshots),
+    fills: numberField(counts?.fills),
+    historicalFills: numberField(counts?.historicalFills),
+    orders: numberField(counts?.orders),
+    historicalOrders: numberField(counts?.historicalOrders),
+    positions: numberField(counts?.positions),
+    settlements: numberField(counts?.settlements),
+    markets: numberField(counts?.markets),
+    events: numberField(counts?.events),
+    skippedRows: numberField(counts?.skippedRows),
+  };
+}
+
+function numberField(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function stringArray(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function fallbackPairsFromValue(value: unknown): Array<[string, string | null]> {
+  if (!Array.isArray(value)) return [];
+  const pairs: Array<[string, string | null]> = [];
+  for (const item of value) {
+    if (!Array.isArray(item)) continue;
+    const [marketTicker, eventTicker] = item;
+    if (typeof marketTicker !== "string" || !marketTicker.trim()) continue;
+    pairs.push([marketTicker, typeof eventTicker === "string" && eventTicker.trim() ? eventTicker : null]);
+  }
+  return pairs;
+}
+
+function nonNegativeInteger(value: unknown) {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : 0;
+}
+
+function backfillStageFromValue(value: unknown): BackfillProgressStage | null {
+  return typeof value === "string" && value in BACKFILL_STAGE_DETAILS ? (value as BackfillProgressStage) : null;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isKalshiRateLimitError(error: unknown) {
+  return kalshiStatusCode(error) === 429;
+}
+
+function isKalshiNotFoundError(error: unknown) {
+  return kalshiStatusCode(error) === 404;
+}
+
+function kalshiStatusCode(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  const match = message.match(/Kalshi API (\d{3})/);
+  return match ? Number(match[1]) : null;
+}
+
 function rawRowHash(row: JsonRecord) {
   return crypto.createHash("sha256").update(stableJson(row)).digest("hex");
 }
@@ -1216,6 +1460,7 @@ function publicBackfillError(error: unknown) {
   if (message.includes("Kalshi API 401")) return "Kalshi rejected the configured API credentials.";
   if (message.includes("Kalshi API 403")) return "Kalshi credentials do not have access to this Kalshi resource.";
   if (message.includes("Kalshi API 404")) return "Kalshi endpoint or market metadata was not found.";
+  if (message.includes("Kalshi API 429")) return "Kalshi rate-limited optional metadata; core import continues.";
   if (message.includes("Missing Kalshi private key")) return "Kalshi private key is missing from the deployment environment.";
   return message.length > 240 ? `${message.slice(0, 237)}...` : message;
 }

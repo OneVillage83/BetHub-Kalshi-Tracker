@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { applyBackfillProgress, BACKFILL_STALE_MS, buildMissingCredentialsBackfillStats, isBackfillProgressStale } from "./backfill";
+import {
+  applyBackfillProgress,
+  BACKFILL_STALE_MS,
+  buildMissingCredentialsBackfillStats,
+  fetchOptionalEventMetadata,
+  isBackfillProgressStale,
+} from "./backfill";
 
 describe("backfill progress helpers", () => {
   it("records missing credentials as a zero-percent setup state", () => {
@@ -31,5 +37,38 @@ describe("backfill progress helpers", () => {
 
     expect(isBackfillProgressStale("2026-05-28T03:56:59.000Z", now)).toBe(true);
     expect(isBackfillProgressStale(new Date(now - BACKFILL_STALE_MS + 1000).toISOString(), now)).toBe(false);
+  });
+
+  it("treats missing event metadata as a non-fatal skip", async () => {
+    const result = await fetchOptionalEventMetadata(
+      {
+        getEvent: async () => {
+          throw new Error("Kalshi API 404: not found");
+        },
+      },
+      "KXTEST",
+      [],
+    );
+
+    expect(result.status).toBe("not_found");
+    if (result.status !== "ok") expect(result.message).toContain("metadata was not found");
+  });
+
+  it("retries event metadata rate limits and returns a non-fatal result", async () => {
+    let calls = 0;
+    const result = await fetchOptionalEventMetadata(
+      {
+        getEvent: async () => {
+          calls += 1;
+          throw new Error('Kalshi API 429: {"error":{"code":"too_many_requests"}}');
+        },
+      },
+      "KXTEST",
+      [0, 0],
+    );
+
+    expect(calls).toBe(3);
+    expect(result.status).toBe("rate_limited");
+    if (result.status !== "ok") expect(result.message).toContain("core import continues");
   });
 });

@@ -14,8 +14,7 @@ export async function POST() {
     const result = await runKalshiBackfill(appUser, {
       kind: "backfill-continue",
       source: "netlify-route",
-      replaceActiveRun: true,
-      allowContinuation: false,
+      allowContinuation: true,
     });
     return apiResponse(result.data, result.meta, { status: backfillResponseStatus(result.data, result.meta) });
   } catch (error) {
