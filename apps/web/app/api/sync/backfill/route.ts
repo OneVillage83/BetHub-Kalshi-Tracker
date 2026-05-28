@@ -11,9 +11,15 @@ export async function POST() {
 
   try {
     const result = await runKalshiBackfill(appUser);
-    return apiResponse(result.data, result.meta, { status: result.meta.source === "stub" ? 202 : 200 });
+    return apiResponse(result.data, result.meta, { status: backfillResponseStatus(result.data, result.meta) });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Kalshi backfill failed.";
     return apiError(message, 500);
   }
+}
+
+export function backfillResponseStatus(data: { status?: string; continuationRequired?: boolean }, meta: { source?: string }) {
+  if (meta.source === "stub") return 202;
+  if (data.status === "running" || data.continuationRequired) return 202;
+  return 200;
 }

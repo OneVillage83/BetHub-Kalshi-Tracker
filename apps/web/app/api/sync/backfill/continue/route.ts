@@ -1,6 +1,7 @@
 import { apiError, apiResponse } from "../../../../../lib/api-response";
 import { requireAuthenticatedAppUser } from "../../../../../lib/auth";
 import { runKalshiBackfill } from "../../../../../lib/server/backfill";
+import { backfillResponseStatus } from "../route";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -10,8 +11,13 @@ export async function POST() {
   if (!appUser) return response;
 
   try {
-    const result = await runKalshiBackfill(appUser, { kind: "backfill-continue", source: "netlify-route" });
-    return apiResponse(result.data, result.meta, { status: result.meta.source === "stub" ? 202 : 200 });
+    const result = await runKalshiBackfill(appUser, {
+      kind: "backfill-continue",
+      source: "netlify-route",
+      replaceActiveRun: true,
+      allowContinuation: false,
+    });
+    return apiResponse(result.data, result.meta, { status: backfillResponseStatus(result.data, result.meta) });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Kalshi backfill continuation failed.";
     return apiError(message, 500);

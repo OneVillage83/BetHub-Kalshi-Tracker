@@ -22,6 +22,11 @@ export type BackfillProgressStage =
   | "complete"
   | "failed";
 
+export const BACKFILL_STALE_MS = 3 * 60 * 1000;
+const BACKFILL_SOFT_BUDGET_MS = 18 * 1000;
+const MARKET_METADATA_CHUNK_SIZE = 20;
+const EVENT_METADATA_CHUNK_SIZE = 5;
+
 export type BackfillCounts = {
   balanceSnapshots: number;
   fills: number;
@@ -51,6 +56,7 @@ export type ImportStats = BackfillCounts & {
   percent: number;
   counts: BackfillCounts;
   updatedAt: string;
+  continuationRequired?: boolean;
 };
 
 type NormalizedFill = {
@@ -154,13 +160,35 @@ const BACKFILL_STAGE_DETAILS: Record<BackfillProgressStage, { stageLabel: string
   failed: { stageLabel: "Backfill failed", percent: 100 },
 };
 
-export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: { source?: string; kind?: string } = {}) {
+type BackfillOptions = {
+  source?: string;
+  kind?: string;
+  replaceActiveRun?: boolean;
+  allowContinuation?: boolean;
+  softBudgetMs?: number;
+};
+
+export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: BackfillOptions = {}) {
   const credentialStatus = await getKalshiCredentialStatus(appUser.id);
   if (!credentialStatus.configured) {
     return createMissingCredentialsSyncRun(appUser.id);
   }
 
   const prisma = getPrisma();
+  await markStaleRunningSyncRunsFailed(appUser.id);
+
+  const activeRun = await prisma.syncRun.findFirst({
+    where: { appUserId: appUser.id, status: "running" },
+    orderBy: { startedAt: "desc" },
+  });
+  if (activeRun && !options.replaceActiveRun) return runningSyncRunResponse(activeRun);
+  if (activeRun && options.replaceActiveRun) {
+    await failRunningSyncRuns(appUser.id, "Backfill resumed in a fresh request.");
+  }
+
+  const startedAt = Date.now();
+  const softBudgetMs = options.softBudgetMs ?? BACKFILL_SOFT_BUDGET_MS;
+  const allowContinuation = options.allowContinuation ?? options.kind !== "backfill-continue";
   const { client, accountId } = await buildKalshiClientForAppUser(appUser);
   const account = await prisma.kalshiAccount.findUniqueOrThrow({ where: { id: accountId } });
   const syncRun = await prisma.syncRun.create({
@@ -238,9 +266,33 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
     stats.settlements = normalizedSettlements.length;
 
     await updateBackfillProgress(prisma, syncRun.id, stats, "market_metadata");
-    const marketsByTicker = await fetchMarketMetadata(client, marketTickers, stats.warnings);
+    let shouldContinueLater = false;
+    const shouldPauseForContinuation = () => {
+      const shouldPause = Date.now() - startedAt > softBudgetMs;
+      shouldContinueLater ||= shouldPause;
+      return shouldPause;
+    };
+    const marketsByTicker = await fetchMarketMetadata(client, marketTickers, stats.warnings, {
+      onProgress: async (processed, total) => {
+        stats.markets = processed;
+        applyBackfillProgress(stats, "market_metadata");
+        stats.percent = total > 0 ? Math.min(92, 86 + Math.round((processed / total) * 6)) : stats.percent;
+        await saveBackfillStats(prisma, syncRun.id, stats);
+      },
+      shouldStop: shouldPauseForContinuation,
+    });
+    if (shouldContinueLater && allowContinuation) return createContinuationResponse(prisma, syncRun.id, stats);
     const eventTickers = collectEventTickers(marketsByTicker, fallbackEventTickers);
-    const eventsByTicker = await fetchEventMetadata(client, Array.from(eventTickers), stats.warnings);
+    const eventsByTicker = await fetchEventMetadata(client, Array.from(eventTickers), stats.warnings, {
+      onProgress: async (processed, total) => {
+        stats.events = processed;
+        applyBackfillProgress(stats, "market_metadata");
+        stats.percent = total > 0 ? Math.min(93, 92 + Math.round((processed / total) * 1)) : stats.percent;
+        await saveBackfillStats(prisma, syncRun.id, stats);
+      },
+      shouldStop: shouldPauseForContinuation,
+    });
+    if (shouldContinueLater && allowContinuation) return createContinuationResponse(prisma, syncRun.id, stats);
 
     await ensureEvents(eventsByTicker, eventTickers);
     stats.events = eventTickers.size;
@@ -460,6 +512,43 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
   }
 }
 
+export async function markStaleRunningSyncRunsFailed(appUserId: string, now = Date.now()) {
+  const prisma = getPrisma();
+  const runningRuns = await prisma.syncRun.findMany({
+    where: { appUserId, status: "running" },
+    orderBy: { startedAt: "desc" },
+  });
+
+  for (const run of runningRuns) {
+    const progress = progressRecordFromStats(run.stats);
+    const updatedAt = progress?.updatedAt ?? run.startedAt.toISOString();
+    if (!isBackfillProgressStale(updatedAt, now)) continue;
+
+    const stats = {
+      ...(asStatsRecord(run.stats) ?? {}),
+      failure: "Backfill may have timed out; resume or try again.",
+      timedOut: true,
+    } as unknown as Prisma.InputJsonValue;
+    await prisma.syncRun.update({
+      where: { id: run.id },
+      data: {
+        status: "failed",
+        completedAt: new Date(now),
+        lockedAt: null,
+        errorMessage: "Backfill may have timed out; resume or try again.",
+        stats,
+      },
+    });
+  }
+}
+
+export function isBackfillProgressStale(updatedAt: string | null | undefined, now = Date.now()) {
+  if (!updatedAt) return true;
+  const timestamp = Date.parse(updatedAt);
+  if (!Number.isFinite(timestamp)) return true;
+  return now - timestamp > BACKFILL_STALE_MS;
+}
+
 async function createMissingCredentialsSyncRun(appUserId: string) {
   const stats = buildMissingCredentialsBackfillStats();
   const syncRun = await getPrisma().syncRun.create({
@@ -487,6 +576,65 @@ async function createMissingCredentialsSyncRun(appUserId: string) {
     },
     meta: { source: "stub" as const, stubReason: STUB_REASON_AWAITING_KALSHI },
   };
+}
+
+async function createContinuationResponse(prisma: ReturnType<typeof getPrisma>, syncRunId: string, stats: ImportStats) {
+  stats.continuationRequired = true;
+  stats.stageLabel = "Backfill is still running; continuing in another request";
+  stats.updatedAt = new Date().toISOString();
+  await prisma.syncRun.update({
+    where: { id: syncRunId },
+    data: {
+      lockedAt: null,
+      cursor: {
+        continuationRequired: true,
+        reason: "soft_time_budget",
+        stage: stats.stage,
+        updatedAt: stats.updatedAt,
+      } as Prisma.InputJsonValue,
+      stats: stats as unknown as Prisma.InputJsonValue,
+    },
+  });
+
+  return {
+    data: {
+      id: syncRunId,
+      status: "running",
+      completedAt: null,
+      continuationRequired: true,
+      message: "Backfill is still running...",
+      stats,
+    },
+    meta: { source: "db" as const },
+  };
+}
+
+function runningSyncRunResponse(syncRun: { id: string; stats: Prisma.JsonValue; cursor: Prisma.JsonValue; completedAt: Date | null }) {
+  const stats = asStatsRecord(syncRun.stats);
+  const cursor = asStatsRecord(syncRun.cursor);
+  return {
+    data: {
+      id: syncRun.id,
+      status: "running",
+      completedAt: syncRun.completedAt?.toISOString() ?? null,
+      continuationRequired: cursor?.continuationRequired === true || stats?.continuationRequired === true,
+      message: "Backfill is still running...",
+      stats,
+    },
+    meta: { source: "db" as const },
+  };
+}
+
+async function failRunningSyncRuns(appUserId: string, reason: string) {
+  await getPrisma().syncRun.updateMany({
+    where: { appUserId, status: "running" },
+    data: {
+      status: "failed",
+      completedAt: new Date(),
+      lockedAt: null,
+      errorMessage: reason,
+    },
+  });
 }
 
 export function emptyBackfillCounts(): BackfillCounts {
@@ -551,6 +699,10 @@ export function applyBackfillProgress(stats: ImportStats, stage: BackfillProgres
 
 async function updateBackfillProgress(prisma: ReturnType<typeof getPrisma>, syncRunId: string, stats: ImportStats, stage: BackfillProgressStage) {
   applyBackfillProgress(stats, stage);
+  await saveBackfillStats(prisma, syncRunId, stats);
+}
+
+async function saveBackfillStats(prisma: ReturnType<typeof getPrisma>, syncRunId: string, stats: ImportStats) {
   await prisma.syncRun.update({
     where: { id: syncRunId },
     data: {
@@ -757,10 +909,18 @@ function collectFallbackEventTickers(
   return fallbackEventTickers;
 }
 
-async function fetchMarketMetadata(client: KalshiRestClient, tickers: string[], warnings: string[]) {
+async function fetchMarketMetadata(
+  client: KalshiRestClient,
+  tickers: string[],
+  warnings: string[],
+  options: {
+    onProgress?: (processed: number, total: number) => Promise<void>;
+    shouldStop?: () => boolean;
+  } = {},
+) {
   const marketsByTicker = new Map<string, MarketMetadata>();
 
-  for (const chunk of chunks(tickers, 100)) {
+  for (const chunk of chunks(tickers, MARKET_METADATA_CHUNK_SIZE)) {
     try {
       const response = await client.getMarketsByTickers(chunk);
       for (const rawMarket of arrayFrom(asRecord(response), "markets")) {
@@ -769,6 +929,11 @@ async function fetchMarketMetadata(client: KalshiRestClient, tickers: string[], 
       }
     } catch (error) {
       warnings.push(`market metadata: ${publicBackfillError(error)}`);
+    }
+    await options.onProgress?.(marketsByTicker.size, tickers.length);
+    if (options.shouldStop?.()) {
+      warnings.push("market metadata: paused before the Netlify function time limit");
+      break;
     }
   }
 
@@ -812,10 +977,19 @@ function collectEventTickers(marketsByTicker: Map<string, MarketMetadata>, fallb
   return eventTickers;
 }
 
-async function fetchEventMetadata(client: KalshiRestClient, eventTickers: string[], warnings: string[]) {
+async function fetchEventMetadata(
+  client: KalshiRestClient,
+  eventTickers: string[],
+  warnings: string[],
+  options: {
+    onProgress?: (processed: number, total: number) => Promise<void>;
+    shouldStop?: () => boolean;
+  } = {},
+) {
   const eventsByTicker = new Map<string, EventMetadata>();
+  const cappedEventTickers = eventTickers.slice(0, 100);
 
-  for (const chunk of chunks(eventTickers.slice(0, 100), 10)) {
+  for (const chunk of chunks(cappedEventTickers, EVENT_METADATA_CHUNK_SIZE)) {
     const results = await Promise.allSettled(
       chunk.map(async (eventTicker) => {
         const response = await client.getEvent(eventTicker);
@@ -826,6 +1000,11 @@ async function fetchEventMetadata(client: KalshiRestClient, eventTickers: string
 
     for (const result of results) {
       if (result.status === "rejected") warnings.push(`event metadata: ${publicBackfillError(result.reason)}`);
+    }
+    await options.onProgress?.(eventsByTicker.size, cappedEventTickers.length);
+    if (options.shouldStop?.()) {
+      warnings.push("event metadata: paused before the Netlify function time limit");
+      break;
     }
   }
 
@@ -928,6 +1107,18 @@ async function ensureMarkets(
 function asRecord(value: unknown): JsonRecord {
   if (value && typeof value === "object" && !Array.isArray(value)) return value as JsonRecord;
   return {};
+}
+
+function asStatsRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function progressRecordFromStats(stats: unknown) {
+  const row = asStatsRecord(stats);
+  if (!row) return null;
+  return {
+    updatedAt: typeof row.updatedAt === "string" ? row.updatedAt : null,
+  };
 }
 
 function arrayFrom(record: JsonRecord, key: string) {

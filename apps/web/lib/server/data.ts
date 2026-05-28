@@ -1,7 +1,7 @@
 import { getPrisma, decimalToString } from "@kalshi-tracker/db";
 import { STUB_REASON_AWAITING_KALSHI, STUB_REASON_LIVE_SYNC } from "../env";
 import { getKalshiCredentialStatus } from "./kalshi-credentials";
-import type { BackfillCounts, BackfillProgress, BackfillProgressStage } from "./backfill";
+import { isBackfillProgressStale, type BackfillCounts, type BackfillProgress, type BackfillProgressStage } from "./backfill";
 
 type SourceState = {
   source: "db" | "stub";
@@ -71,6 +71,10 @@ export type SyncStatus = {
   lastError: string | null;
   progress: BackfillProgress | null;
   stats: BackfillCounts | null;
+  timedOut: boolean;
+  canResume: boolean;
+  continuationRequired: boolean;
+  statusMessage: string | null;
   websocket: "stubbed";
   readOnly: true;
   historicalImport: "pending" | "complete" | "stubbed";
@@ -265,6 +269,15 @@ export async function getSyncStatus(appUserId: string): Promise<{ data: SyncStat
     }),
   ]);
   const credentials = await getKalshiCredentialStatus(appUserId);
+  const progress = progressFromStats(latest?.stats);
+  const timedOut = latest?.status === "running" && isBackfillProgressStale(progress?.updatedAt ?? latest.startedAt.toISOString());
+  const continuationRequired = Boolean(latest?.status === "running" && continuationRequiredFromRun(latest?.stats, latest?.cursor));
+  const statusMessage = syncStatusMessage({
+    status: latest?.status ?? null,
+    timedOut,
+    continuationRequired,
+    error: latest?.errorMessage ?? null,
+  });
 
   return {
     data: {
@@ -274,14 +287,27 @@ export async function getSyncStatus(appUserId: string): Promise<{ data: SyncStat
       lastSuccessfulSyncAt: lastSuccessfulSync?.completedAt?.toISOString() ?? null,
       lastStatus: latest?.status ?? null,
       lastError: latest?.errorMessage ?? null,
-      progress: progressFromStats(latest?.stats),
+      progress,
       stats: countsFromStats(latest?.stats),
+      timedOut,
+      canResume: timedOut || latest?.status === "failed" || continuationRequired,
+      continuationRequired,
+      statusMessage,
       websocket: "stubbed",
       readOnly: true,
       historicalImport: latest?.status === "success" ? "complete" : credentials.configured ? "pending" : "stubbed",
     },
     meta: credentials.configured ? { source: "stub", stubReason: STUB_REASON_LIVE_SYNC } : await sourceState(appUserId),
   };
+}
+
+export function syncStatusMessage(params: { status: string | null; timedOut: boolean; continuationRequired: boolean; error: string | null }) {
+  if (params.timedOut) return "Backfill may have timed out; resume or try again.";
+  if (params.status === "success") return "Backfill completed.";
+  if (params.status === "failed") return `Backfill failed: ${params.error ?? "Unknown error"}`;
+  if (params.status === "stub") return STUB_REASON_AWAITING_KALSHI;
+  if (params.status === "running" || params.continuationRequired) return "Backfill is still running...";
+  return null;
 }
 
 function progressFromStats(stats: unknown): BackfillProgress | null {
@@ -320,6 +346,10 @@ function countsFromStats(stats: unknown): BackfillCounts | null {
     events: numberField(counts.events),
     skippedRows: numberField(counts.skippedRows),
   };
+}
+
+function continuationRequiredFromRun(stats: unknown, cursor: unknown) {
+  return asStatsRecord(stats)?.continuationRequired === true || asStatsRecord(cursor)?.continuationRequired === true;
 }
 
 function asStatsRecord(value: unknown): Record<string, unknown> | null {

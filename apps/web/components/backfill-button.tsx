@@ -8,6 +8,7 @@ export function BackfillButton() {
   const [running, setRunning] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const polling = useRef(false);
+  const continuing = useRef(false);
 
   async function runBackfill() {
     setRunning(true);
@@ -28,49 +29,101 @@ export function BackfillButton() {
         updatedAt: new Date().toISOString(),
       },
       stats: current?.stats ?? emptyCounts(),
+      timedOut: false,
+      canResume: false,
+      continuationRequired: false,
+      statusMessage: "Backfill is still running...",
       websocket: "stubbed",
       readOnly: true,
       historicalImport: "pending",
     }));
     polling.current = true;
     void pollSyncStatus();
+    let keepPolling = false;
 
     try {
       const response = await fetch("/api/sync/backfill", { method: "POST" });
       const payload = await response.json();
       const stats = payload.data?.stats;
-      const summary =
-        stats && response.ok
-          ? `Imported ${stats.fills + stats.historicalFills} fills, ${stats.orders + stats.historicalOrders} orders, ${stats.positions} positions, and ${stats.settlements} settlements.`
-          : null;
-      setMessage(summary ?? payload.data?.message ?? payload.error?.message ?? "Backfill request finished.");
-      await refreshSyncStatus();
+      const latestStatus = payload.data?.status;
+
+      if (latestStatus === "success" && stats) {
+        setMessage(`Backfill completed. Imported ${stats.fills + stats.historicalFills} fills, ${stats.orders + stats.historicalOrders} orders, ${stats.positions} positions, and ${stats.settlements} settlements.`);
+      } else if (latestStatus === "running" || payload.data?.continuationRequired) {
+        keepPolling = true;
+        setMessage("Backfill is still running...");
+        if (payload.data?.continuationRequired) void continueBackfill();
+      } else if (latestStatus === "failed") {
+        setMessage(payload.data?.message ?? "Backfill failed. Check the deployment logs and try again.");
+      } else if (latestStatus === "stub") {
+        setMessage(payload.data?.message ?? "Kalshi credentials are required before backfill.");
+      } else if (!response.ok) {
+        setMessage(payload.error?.message ?? "Backfill failed. Check the deployment logs and try again.");
+      } else {
+        keepPolling = true;
+        setMessage("Backfill is still running...");
+      }
+      await refreshSyncStatus({ autoContinue: true });
     } catch {
       setMessage("Backfill request failed. Check the deployment logs and try again.");
     } finally {
-      polling.current = false;
-      setRunning(false);
+      if (!keepPolling) {
+        polling.current = false;
+        setRunning(false);
+      }
     }
   }
 
   async function pollSyncStatus() {
     while (polling.current) {
-      await refreshSyncStatus().catch(() => undefined);
+      const status = await refreshSyncStatus({ autoContinue: true }).catch(() => null);
+      if (status && isTerminalStatus(status)) {
+        polling.current = false;
+        setRunning(false);
+        setMessage(status.statusMessage ?? terminalMessage(status));
+        break;
+      }
       await new Promise((resolve) => setTimeout(resolve, 1500));
     }
   }
 
-  async function refreshSyncStatus() {
+  async function refreshSyncStatus(options: { autoContinue?: boolean } = {}) {
     const response = await fetch("/api/sync/status");
-    if (!response.ok) return;
+    if (!response.ok) return null;
     const payload = await response.json();
-    if (payload.data) setSyncStatus(payload.data);
+    if (!payload.data) return null;
+    setSyncStatus(payload.data);
+    if (options.autoContinue && payload.data.continuationRequired && !payload.data.timedOut) void continueBackfill();
+    return payload.data as SyncStatus;
+  }
+
+  async function continueBackfill() {
+    if (continuing.current) return;
+    continuing.current = true;
+    setMessage("Backfill is still running...");
+    try {
+      const response = await fetch("/api/sync/backfill/continue", { method: "POST" });
+      const payload = await response.json();
+      if (payload.data?.status === "success") {
+        setMessage("Backfill completed.");
+      } else if (payload.data?.status === "running" || payload.data?.continuationRequired) {
+        setMessage("Backfill is still running...");
+      } else if (!response.ok) {
+        setMessage(payload.error?.message ?? "Backfill failed. Check the deployment logs and try again.");
+      }
+      await refreshSyncStatus();
+    } catch {
+      setMessage("Backfill failed. Check the deployment logs and try again.");
+    } finally {
+      continuing.current = false;
+    }
   }
 
   const progress = syncStatus?.progress;
   const percent = progress?.percent ?? (running ? 3 : 0);
   const counts = progress?.counts ?? syncStatus?.stats ?? emptyCounts();
-  const isTerminal = syncStatus?.lastStatus === "success" || syncStatus?.lastStatus === "failed" || syncStatus?.lastStatus === "stub";
+  const isTerminal = syncStatus ? isTerminalStatus(syncStatus) : false;
+  const buttonLabel = syncStatus?.timedOut || syncStatus?.canResume ? "Resume backfill" : "Start backfill";
 
   return (
     <div className="space-y-4">
@@ -80,7 +133,7 @@ export function BackfillButton() {
         disabled={running}
         className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {running ? "Importing" : "Start backfill"}
+        {running ? "Importing" : buttonLabel}
       </button>
       {running || progress || message ? (
         <div className="space-y-3">
@@ -100,12 +153,25 @@ export function BackfillButton() {
             <Stat label="Settlements" value={counts.settlements} />
           </div>
           {progress?.warnings.length ? <p className="text-xs text-amber-300">{progress.warnings[0]}</p> : null}
-          {syncStatus?.lastError && isTerminal ? <p className="text-sm text-red-300">{syncStatus.lastError}</p> : null}
+          {syncStatus?.statusMessage && isTerminal ? <p className={syncStatus.lastStatus === "failed" || syncStatus.timedOut ? "text-sm text-red-300" : "text-sm text-emerald-300"}>{syncStatus.statusMessage}</p> : null}
           {message ? <p className="text-sm text-amber-300">{message}</p> : null}
         </div>
       ) : null}
     </div>
   );
+}
+
+function isTerminalStatus(status: SyncStatus) {
+  return status.lastStatus === "success" || status.lastStatus === "failed" || status.lastStatus === "stub" || status.timedOut;
+}
+
+function terminalMessage(status: SyncStatus) {
+  if (status.statusMessage) return status.statusMessage;
+  if (status.lastStatus === "success") return "Backfill completed.";
+  if (status.lastStatus === "failed") return "Backfill failed. Check the deployment logs and try again.";
+  if (status.lastStatus === "stub") return "Kalshi credentials are required before backfill.";
+  if (status.timedOut) return "Backfill may have timed out; resume or try again.";
+  return "Backfill is still running...";
 }
 
 function Stat({ label, value }: { label: string; value: number }) {
