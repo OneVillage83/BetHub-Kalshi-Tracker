@@ -52,4 +52,28 @@ describe("KalshiRestClient", () => {
     expect(positions.marketPositions).toEqual([{ market_ticker: "KXMARKET-1" }, { market_ticker: "KXMARKET-2" }]);
     expect(positions.eventPositions).toEqual([{ event_ticker: "KXCOMBO" }, { event_ticker: "KXCOMBO2" }]);
   });
+
+  it("passes repeated query params for multiple market orderbooks", async () => {
+    const privateKeyPem = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({
+      type: "pkcs8",
+      format: "pem",
+    }) as string;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      return new Response(JSON.stringify({ orderbooks: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    const client = new KalshiRestClient({
+      baseUrl: "https://external-api.kalshi.com/trade-api/v2",
+      accessKeyId: "test",
+      privateKeyPem,
+    });
+
+    await client.getMultipleMarketOrderbooks(["KXNBA-1", "KXNBA-2"]);
+
+    const url = new URL(fetchMock.mock.calls[0]?.[0] as string);
+    expect(url.pathname).toBe("/trade-api/v2/markets/orderbooks");
+    expect(url.searchParams.getAll("tickers")).toEqual(["KXNBA-1", "KXNBA-2"]);
+  });
 });

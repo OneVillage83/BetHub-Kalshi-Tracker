@@ -18,7 +18,13 @@ export class KalshiRestClient {
 
     const url = new URL(`${this.config.baseUrl}${options.path}`);
     for (const [key, value] of Object.entries(options.query ?? {})) {
-      if (value !== undefined && value !== "") url.searchParams.set(key, String(value));
+      if (Array.isArray(value)) {
+        for (const entry of value) {
+          if (entry !== undefined && entry !== "") url.searchParams.append(key, String(entry));
+        }
+      } else if (value !== undefined && value !== "") {
+        url.searchParams.set(key, String(value));
+      }
     }
 
     const headers: Record<string, string> = {};
@@ -144,6 +150,31 @@ export class KalshiRestClient {
     return this.request({ path: "/markets", query: { tickers: tickers.join(",") }, authenticated: false });
   }
 
+  getMarketCandlesticks(query: {
+    market_tickers: string;
+    start_ts: number;
+    end_ts: number;
+    period_interval: number;
+    include_latest_before_start?: boolean;
+  }) {
+    return this.request({ path: "/markets/candlesticks", query, authenticated: false });
+  }
+
+  getHistoricalMarketCandlesticks(
+    ticker: string,
+    query: {
+      start_ts: number;
+      end_ts: number;
+      period_interval: 1 | 60 | 1440;
+    },
+  ) {
+    return this.request({ path: `/historical/markets/${encodeURIComponent(ticker)}/candlesticks`, query, authenticated: false });
+  }
+
+  getMultipleMarketOrderbooks(tickers: string[]) {
+    return this.request({ path: "/markets/orderbooks", query: { tickers } });
+  }
+
   getMarket(ticker: string) {
     return this.request({ path: `/markets/${encodeURIComponent(ticker)}`, authenticated: false });
   }
@@ -154,5 +185,9 @@ export class KalshiRestClient {
 
   getEvents(query: Record<string, string | number | boolean | undefined> = {}) {
     return this.request({ path: "/events", query, authenticated: false });
+  }
+
+  getSportsFilters() {
+    return this.request({ path: "/search/filters_by_sport", authenticated: false });
   }
 }

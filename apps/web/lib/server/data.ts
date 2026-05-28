@@ -431,6 +431,10 @@ function countsFromStats(stats: unknown): BackfillCounts | null {
     settlements: numberField(counts.settlements),
     markets: numberField(counts.markets),
     events: numberField(counts.events),
+    sportsMarkets: numberField(counts.sportsMarkets),
+    sportsFills: numberField(counts.sportsFills),
+    candlesticks: numberField(counts.candlesticks),
+    orderbookSnapshots: numberField(counts.orderbookSnapshots),
     skippedRows: numberField(counts.skippedRows),
   };
 }
@@ -460,6 +464,10 @@ function emptyCounts(): BackfillCounts {
     settlements: 0,
     markets: 0,
     events: 0,
+    sportsMarkets: 0,
+    sportsFills: 0,
+    candlesticks: 0,
+    orderbookSnapshots: 0,
     skippedRows: 0,
   };
 }

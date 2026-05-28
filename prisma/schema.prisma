@@ -75,6 +75,7 @@ model KalshiAccount {
   settlements Settlement[]
   balances    BalanceSnapshot[]
   syncRuns    SyncRun[]
+  sportsFillAnalytics SportsFillAnalytics[]
 
   @@index([appUserId])
 }
@@ -105,6 +106,10 @@ model Market {
   orders         Order[]
   positions      Position[]
   settlements    Settlement[]
+  sportsClassification SportsMarketClassification?
+  candlesticks   MarketCandlestick[]
+  orderbookSnapshots OrderbookSnapshot[]
+  sportsFillAnalytics SportsFillAnalytics[]
 }
 
 model Event {
@@ -118,6 +123,68 @@ model Event {
 
   markets   Market[]
   positions EventPosition[]
+}
+
+model SportsMarketClassification {
+  marketTicker         String   @id
+  eventTicker          String?
+  eventName            String?
+  sport                String?
+  league               String?
+  marketType           String?
+  teams                String[] @default([])
+  primaryTeam          String?
+  opponentTeam         String?
+  classificationSource String   @default("heuristic")
+  confidence           Int      @default(0)
+  rawJson              Json?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  market               Market   @relation(fields: [marketTicker], references: [ticker], onDelete: Cascade)
+
+  @@index([sport, league])
+  @@index([eventTicker])
+}
+
+model MarketCandlestick {
+  id                    String   @id @default(cuid())
+  marketTicker          String
+  periodIntervalMinutes Int      @default(1)
+  endPeriod             DateTime
+  yesBidCloseCents      Int?
+  yesAskCloseCents      Int?
+  priceCloseCents       Int?
+  priceMeanCents        Int?
+  volume                Decimal? @db.Decimal(20, 4)
+  openInterest          Decimal? @db.Decimal(20, 4)
+  rawJson               Json
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  market                Market   @relation(fields: [marketTicker], references: [ticker], onDelete: Cascade)
+
+  @@unique([marketTicker, periodIntervalMinutes, endPeriod])
+  @@index([marketTicker, endPeriod])
+}
+
+model OrderbookSnapshot {
+  id              String   @id @default(cuid())
+  marketTicker    String
+  observedAt      DateTime @default(now())
+  yesBidCents     Int?
+  yesAskCents     Int?
+  noBidCents      Int?
+  noAskCents      Int?
+  spreadCents     Int?
+  midpointCents   Int?
+  rawJson         Json
+  createdAt       DateTime @default(now())
+
+  market          Market   @relation(fields: [marketTicker], references: [ticker], onDelete: Cascade)
+
+  @@unique([marketTicker, observedAt])
+  @@index([marketTicker, observedAt])
 }
 
 model Fill {
@@ -145,6 +212,40 @@ model Fill {
   @@unique([kalshiAccountId, fillId])
   @@index([kalshiAccountId, createdTime])
   @@index([marketTicker])
+}
+
+model SportsFillAnalytics {
+  id                         String      @id @default(cuid())
+  kalshiAccountId            String
+  fillId                     String
+  marketTicker               String
+  eventTicker                String?
+  sport                      String?
+  league                     String?
+  team                       String?
+  opponentTeam               String?
+  marketType                 String?
+  chosenSide                 OutcomeSide @default(unknown)
+  entryPriceCents            Int
+  priceBucket                String
+  clv15mCents                Int?
+  clv1hCents                 Int?
+  clv6hCents                 Int?
+  clv24hCents                Int?
+  clvCloseCents              Int?
+  nearestOrderbookObservedAt DateTime?
+  midPriceCents              Int?
+  spreadCents                Int?
+  slippageCents              Int?
+  createdAt                  DateTime    @default(now())
+  updatedAt                  DateTime    @updatedAt
+
+  account                    KalshiAccount @relation(fields: [kalshiAccountId], references: [id], onDelete: Cascade)
+  market                     Market        @relation(fields: [marketTicker], references: [ticker], onDelete: Cascade)
+
+  @@unique([kalshiAccountId, fillId])
+  @@index([kalshiAccountId, marketTicker])
+  @@index([sport, league])
 }
 
 model Order {

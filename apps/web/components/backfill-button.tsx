@@ -195,6 +195,10 @@ function emptyCounts() {
     settlements: 0,
     markets: 0,
     events: 0,
+    sportsMarkets: 0,
+    sportsFills: 0,
+    candlesticks: 0,
+    orderbookSnapshots: 0,
     skippedRows: 0,
   };
 }

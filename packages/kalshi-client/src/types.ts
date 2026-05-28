@@ -11,7 +11,7 @@ export type KalshiHttpMethod = "GET" | "POST" | "PUT" | "DELETE";
 export type KalshiRequestOptions = {
   method?: KalshiHttpMethod;
   path: string;
-  query?: Record<string, string | number | boolean | undefined>;
+  query?: Record<string, string | number | boolean | Array<string | number | boolean> | undefined>;
   body?: unknown;
   authenticated?: boolean;
 };
