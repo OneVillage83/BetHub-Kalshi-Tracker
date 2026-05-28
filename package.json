@@ -10,7 +10,7 @@
     "build": "pnpm --filter @kalshi-tracker/web build",
     "sync:backfill": "pnpm --filter @kalshi-tracker/sync-worker backfill",
     "db:generate": "prisma generate",
-    "db:migrate:deploy": "prisma migrate deploy",
+    "db:migrate:deploy": "node scripts/prisma-migrate-deploy.mjs",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
     "lint": "pnpm -r lint",
@@ -18,7 +18,6 @@
     "test": "pnpm -r test"
   },
   "dependencies": {
-    "@netlify/database": "latest",
     "@netlify/functions": "latest"
   },
   "devDependencies": {

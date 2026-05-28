@@ -9,7 +9,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@netlify/database": "latest",
     "@prisma/adapter-pg": "latest",
     "@prisma/client": "latest",
     "pg": "latest"

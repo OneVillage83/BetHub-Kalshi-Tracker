@@ -22,7 +22,7 @@ See `docs/03-kalshi-api-integration.md` for endpoint details and implementation 
 - Frontend/API: Next.js App Router + TypeScript + Tailwind + Recharts + lucide-react
 - Auth: Clerk
 - Database: Prisma Postgres via Prisma ORM 7
-- Netlify Database package: `@netlify/database` provides branch-aware Postgres connection strings in Netlify builds/functions
+- Hosted database config: Netlify must provide `DATABASE_URL` for builds/functions/runtime
 - Scheduled sync boundary: Netlify Scheduled Functions
 - Worker package: retained for future long-running Kalshi backfill/live sync
 - Deployment: Netlify plus hosted Prisma Postgres
@@ -39,9 +39,9 @@ pnpm typecheck
 pnpm build
 ```
 
-Without Clerk keys, `/` renders a setup-required state and protected APIs return `401`. Without Kalshi keys, authenticated data APIs return empty DB data with `Stub: awaiting Kalshi credentials` metadata.
+Without Clerk keys, `/` renders a setup-required state and protected APIs return `401`. Without `DATABASE_URL` on Netlify, authenticated pages render a database setup error instead of a generic server error. Without Kalshi keys, authenticated data APIs return empty DB data with `Stub: awaiting Kalshi credentials` metadata.
 
-On Netlify, deployments run `pnpm db:generate && pnpm db:migrate:deploy && pnpm --filter @kalshi-tracker/web build`. Netlify Database is detected through `@netlify/database`, and Prisma uses the Netlify-provided connection string with local `DATABASE_URL` fallback.
+On Netlify, deployments run `pnpm db:generate && pnpm db:migrate:deploy && pnpm --filter @kalshi-tracker/web build`. The migration script runs `prisma migrate deploy` when `DATABASE_URL` exists; if the database is not connected yet, it exits cleanly so the setup UI can deploy. Connect Prisma Postgres in Netlify and redeploy to apply the committed migration.
 
 ## Folder layout
 
