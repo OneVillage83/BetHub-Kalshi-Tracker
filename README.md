@@ -47,7 +47,7 @@ On Netlify, deployments run `pnpm db:generate && pnpm db:migrate:deploy && pnpm 
 
 - `DATABASE_URL`: Prisma Postgres connection string for builds/functions/runtime.
 - `APP_ENCRYPTION_KEY`: base64 encoded 32-byte key used to encrypt per-user Kalshi credentials.
-- `OWNER_EMAILS`: optional comma-separated Clerk email allowlist for owner accounts. Existing pre-invite users are promoted by the hardening migration so the first production owner is preserved.
+- `OWNER_EMAILS`: optional comma-separated Clerk email allowlist for owner accounts. This deployment bootstraps `f_rodriguez91@yahoo.com` as the default owner if the env var is missing.
 - `ALLOW_GLOBAL_KALSHI_CREDENTIAL_FALLBACK=true`: optional temporary owner-only bridge for legacy deployment-global Kalshi keys. Leave unset for normal per-user credential mode.
 
 ## Folder layout

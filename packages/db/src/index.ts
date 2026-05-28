@@ -72,9 +72,13 @@ export function normalizeEmail(email: string | null | undefined) {
   return normalized || null;
 }
 
-export function ownerEmailsFromEnv(value = process.env.OWNER_EMAILS) {
+const defaultOwnerEmails = "f_rodriguez91@yahoo.com";
+
+export function ownerEmailsFromEnv(value?: string) {
+  const emailSource = arguments.length > 0 ? value : (process.env.OWNER_EMAILS ?? defaultOwnerEmails);
+
   return new Set(
-    (value ?? "")
+    (emailSource ?? "")
       .split(",")
       .map((email) => normalizeEmail(email))
       .filter((email): email is string => Boolean(email)),
