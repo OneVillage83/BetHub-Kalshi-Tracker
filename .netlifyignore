@@ -1,0 +1,14 @@
+node_modules
+**/node_modules
+.next
+**/.next
+.netlify
+dist
+coverage
+*.tsbuildinfo
+*.log
+.env
+.env.local
+.env.*.local
+secrets
+*.key
