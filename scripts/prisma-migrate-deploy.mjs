@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 
-if (!process.env.DATABASE_URL && process.env.NETLIFY === "true") {
+const isNetlifyBuild = Boolean(process.env.NETLIFY === "true" || process.env.CONTEXT || process.env.DEPLOY_URL || process.env.URL);
+
+if (!process.env.DATABASE_URL && isNetlifyBuild) {
   console.log("DATABASE_URL is not configured; skipping Prisma migrate deploy.");
   console.log("Connect Prisma Postgres in Netlify to run migrations on the next deploy.");
   process.exit(0);

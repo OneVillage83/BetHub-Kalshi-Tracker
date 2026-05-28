@@ -13,7 +13,7 @@ export class DatabaseConfigurationError extends Error {
 export function getDatabaseConnectionString() {
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
 
-  if (process.env.NETLIFY === "true") {
+  if (isHostedRuntime()) {
     throw new DatabaseConfigurationError(
       "DATABASE_URL is not configured for this Netlify deployment. Connect Prisma Postgres and redeploy.",
     );
@@ -23,7 +23,17 @@ export function getDatabaseConnectionString() {
 }
 
 export function isDatabaseConfigured() {
-  return process.env.NETLIFY === "true" ? Boolean(process.env.DATABASE_URL) : Boolean(getDatabaseConnectionString());
+  return isHostedRuntime() ? Boolean(process.env.DATABASE_URL) : Boolean(getDatabaseConnectionString());
+}
+
+export function isHostedRuntime() {
+  return Boolean(
+    process.env.NETLIFY === "true" ||
+      process.env.CONTEXT ||
+      process.env.DEPLOY_URL ||
+      process.env.URL ||
+      (process.env.NODE_ENV === "production" && process.env.CI),
+  );
 }
 
 export function isDatabaseConfigurationError(error: unknown) {
