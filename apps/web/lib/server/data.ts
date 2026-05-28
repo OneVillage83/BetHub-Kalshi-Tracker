@@ -1,6 +1,7 @@
 import { getPrisma, decimalToString } from "@kalshi-tracker/db";
 import { STUB_REASON_AWAITING_KALSHI, STUB_REASON_LIVE_SYNC } from "../env";
 import { getKalshiCredentialStatus } from "./kalshi-credentials";
+import type { BackfillCounts, BackfillProgress, BackfillProgressStage } from "./backfill";
 
 type SourceState = {
   source: "db" | "stub";
@@ -68,6 +69,8 @@ export type SyncStatus = {
   lastSuccessfulSyncAt: string | null;
   lastStatus: string | null;
   lastError: string | null;
+  progress: BackfillProgress | null;
+  stats: BackfillCounts | null;
   websocket: "stubbed";
   readOnly: true;
   historicalImport: "pending" | "complete" | "stubbed";
@@ -271,10 +274,73 @@ export async function getSyncStatus(appUserId: string): Promise<{ data: SyncStat
       lastSuccessfulSyncAt: lastSuccessfulSync?.completedAt?.toISOString() ?? null,
       lastStatus: latest?.status ?? null,
       lastError: latest?.errorMessage ?? null,
+      progress: progressFromStats(latest?.stats),
+      stats: countsFromStats(latest?.stats),
       websocket: "stubbed",
       readOnly: true,
       historicalImport: latest?.status === "success" ? "complete" : credentials.configured ? "pending" : "stubbed",
     },
     meta: credentials.configured ? { source: "stub", stubReason: STUB_REASON_LIVE_SYNC } : await sourceState(appUserId),
+  };
+}
+
+function progressFromStats(stats: unknown): BackfillProgress | null {
+  const row = asStatsRecord(stats);
+  if (!row) return null;
+  const stage = typeof row.stage === "string" ? row.stage : null;
+  const stageLabel = typeof row.stageLabel === "string" ? row.stageLabel : null;
+  const percent = typeof row.percent === "number" ? row.percent : null;
+  const updatedAt = typeof row.updatedAt === "string" ? row.updatedAt : null;
+  if (!stage || !stageLabel || percent == null || !updatedAt) return null;
+
+  return {
+    stage: stage as BackfillProgressStage,
+    stageLabel,
+    percent: Math.max(0, Math.min(100, percent)),
+    counts: countsFromStats(stats) ?? emptyCounts(),
+    warnings: Array.isArray(row.warnings) ? row.warnings.filter((warning): warning is string => typeof warning === "string") : [],
+    updatedAt,
+  };
+}
+
+function countsFromStats(stats: unknown): BackfillCounts | null {
+  const row = asStatsRecord(stats);
+  if (!row) return null;
+  const counts = asStatsRecord(row.counts) ?? row;
+
+  return {
+    balanceSnapshots: numberField(counts.balanceSnapshots),
+    fills: numberField(counts.fills),
+    historicalFills: numberField(counts.historicalFills),
+    orders: numberField(counts.orders),
+    historicalOrders: numberField(counts.historicalOrders),
+    positions: numberField(counts.positions),
+    settlements: numberField(counts.settlements),
+    markets: numberField(counts.markets),
+    events: numberField(counts.events),
+    skippedRows: numberField(counts.skippedRows),
+  };
+}
+
+function asStatsRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function numberField(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function emptyCounts(): BackfillCounts {
+  return {
+    balanceSnapshots: 0,
+    fills: 0,
+    historicalFills: 0,
+    orders: 0,
+    historicalOrders: 0,
+    positions: 0,
+    settlements: 0,
+    markets: 0,
+    events: 0,
+    skippedRows: 0,
   };
 }

@@ -46,6 +46,21 @@ export function KalshiCredentialsPanel({ initialStatus }: { initialStatus: Kalsh
     }
   }
 
+  async function adoptNetlifyKey() {
+    setSaving(true);
+    setMessage("Validating the Netlify-stored personal Kalshi key...");
+    const response = await fetch("/api/settings/kalshi-credentials/adopt-netlify-key", { method: "POST" });
+    const payload = await response.json();
+    setSaving(false);
+
+    if (response.ok) {
+      setStatus(payload.data);
+      setMessage("Netlify-stored Kalshi key validated and saved to your user account.");
+    } else {
+      setMessage(payload.error?.message ?? "Netlify key adoption failed.");
+    }
+  }
+
   async function readKeyFile(file: File | undefined) {
     if (!file) return;
     setPrivateKeyPem(await file.text());
@@ -60,10 +75,29 @@ export function KalshiCredentialsPanel({ initialStatus }: { initialStatus: Kalsh
 
       <div className="mt-4 grid gap-3 text-sm md:grid-cols-2">
         <StatusRow label="Status" value={status.configured ? "configured" : "missing"} />
+        <StatusRow label="Credential source" value={credentialSourceLabel(status.credentialSource)} />
         <StatusRow label="Key ID hint" value={status.keyIdHint ?? "not set"} />
         <StatusRow label="Environment" value={status.environment} />
         <StatusRow label="Encryption" value={status.encryptionConfigured ? "configured" : "missing APP_ENCRYPTION_KEY"} />
+        <StatusRow label="Netlify-stored key" value={status.legacyNetlifyKeyAvailable ? "available" : "not found"} />
       </div>
+
+      {status.canAdoptLegacyNetlifyKey ? (
+        <div className="mt-5 rounded-lg border border-amber-400/30 bg-amber-400/10 p-4">
+          <p className="text-sm font-medium text-amber-200">Netlify-stored personal Kalshi key found</p>
+          <p className="mt-1 text-sm leading-6 text-amber-100/80">
+            Use the existing production key for this signed-in owner account. It will be validated, encrypted, and stored server-side for only your user.
+          </p>
+          <button
+            type="button"
+            onClick={adoptNetlifyKey}
+            disabled={saving}
+            className="mt-3 rounded-lg bg-amber-300 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {saving ? "Working" : "Use this key for my account"}
+          </button>
+        </div>
+      ) : null}
 
       <div className="mt-5 space-y-3">
         <label className="block text-sm text-slate-400">
@@ -117,6 +151,12 @@ export function KalshiCredentialsPanel({ initialStatus }: { initialStatus: Kalsh
       {message ? <p className="mt-3 text-sm text-amber-300">{message}</p> : null}
     </section>
   );
+}
+
+function credentialSourceLabel(source: KalshiCredentialStatus["credentialSource"]) {
+  if (source === "per_user") return "per-user encrypted";
+  if (source === "legacy_netlify") return "Netlify-stored personal key";
+  return "missing";
 }
 
 function Field({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {

@@ -19,7 +19,7 @@ export default async function SettingsPage() {
   const { appUser } = authState;
 
   const sync = await getSyncStatus(appUser.id);
-  const credentials = await getKalshiCredentialStatus(appUser.id);
+  const credentials = await getKalshiCredentialStatus(appUser.id, appUser);
   const invites = appUser.role === "owner" ? await listInvites() : [];
 
   return (
@@ -32,7 +32,7 @@ export default async function SettingsPage() {
             <Row label="Signed in as" value={appUser.email ?? "unknown"} />
             <Row label="Role" value={appUser.role} />
             <Row label="Kalshi credentials" value={credentials.configured ? "configured" : "awaiting per-user key"} />
-            <Row label="Global fallback" value={credentials.globalFallbackAvailable ? "enabled for owner" : "disabled"} />
+            <Row label="Netlify-stored key" value={credentials.legacyNetlifyKeyAvailable ? "available" : "not found"} />
             <Row label="Read-only mode" value="enabled" />
           </div>
         </section>

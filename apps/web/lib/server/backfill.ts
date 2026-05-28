@@ -8,7 +8,21 @@ import { buildKalshiClientForAppUser, getKalshiCredentialStatus } from "./kalshi
 
 type JsonRecord = Record<string, unknown>;
 
-type ImportStats = {
+export type BackfillProgressStage =
+  | "credentials"
+  | "balance"
+  | "fills"
+  | "historical_fills"
+  | "orders"
+  | "historical_orders"
+  | "positions"
+  | "settlements"
+  | "market_metadata"
+  | "database_import"
+  | "complete"
+  | "failed";
+
+export type BackfillCounts = {
   balanceSnapshots: number;
   fills: number;
   historicalFills: number;
@@ -19,7 +33,24 @@ type ImportStats = {
   markets: number;
   events: number;
   skippedRows: number;
+};
+
+export type BackfillProgress = {
+  stage: BackfillProgressStage;
+  stageLabel: string;
+  percent: number;
+  counts: BackfillCounts;
   warnings: string[];
+  updatedAt: string;
+};
+
+export type ImportStats = BackfillCounts & {
+  warnings: string[];
+  stage: BackfillProgressStage;
+  stageLabel: string;
+  percent: number;
+  counts: BackfillCounts;
+  updatedAt: string;
 };
 
 type NormalizedFill = {
@@ -108,6 +139,21 @@ type EventMetadata = {
   rawJson: JsonRecord;
 };
 
+const BACKFILL_STAGE_DETAILS: Record<BackfillProgressStage, { stageLabel: string; percent: number }> = {
+  credentials: { stageLabel: "Checking Kalshi credentials", percent: 5 },
+  balance: { stageLabel: "Fetching balance", percent: 12 },
+  fills: { stageLabel: "Fetching fills", percent: 24 },
+  historical_fills: { stageLabel: "Fetching historical fills", percent: 36 },
+  orders: { stageLabel: "Fetching open and recent orders", percent: 48 },
+  historical_orders: { stageLabel: "Fetching historical orders", percent: 58 },
+  positions: { stageLabel: "Fetching open positions", percent: 68 },
+  settlements: { stageLabel: "Fetching settlements", percent: 76 },
+  market_metadata: { stageLabel: "Enriching market metadata", percent: 86 },
+  database_import: { stageLabel: "Saving imported data", percent: 94 },
+  complete: { stageLabel: "Backfill complete", percent: 100 },
+  failed: { stageLabel: "Backfill failed", percent: 100 },
+};
+
 export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: { source?: string; kind?: string } = {}) {
   const credentialStatus = await getKalshiCredentialStatus(appUser.id);
   if (!credentialStatus.configured) {
@@ -140,18 +186,36 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
     events: 0,
     skippedRows: 0,
     warnings: [],
+    stage: "credentials",
+    stageLabel: BACKFILL_STAGE_DETAILS.credentials.stageLabel,
+    percent: BACKFILL_STAGE_DETAILS.credentials.percent,
+    counts: emptyBackfillCounts(),
+    updatedAt: new Date().toISOString(),
   };
 
   try {
-    const [balance, fills, historicalFills, orders, historicalOrders, positions, settlements] = await Promise.all([
-      client.getBalance(),
-      client.getAllFills(),
-      readOptionalCollection("historical fills", () => client.getAllHistoricalFills(), stats.warnings),
-      readOptionalCollection("orders", () => client.getAllOrders(), stats.warnings),
-      readOptionalCollection("historical orders", () => client.getAllHistoricalOrders(), stats.warnings),
-      client.getAllPositions({ count_filter: "position,total_traded" }),
-      client.getAllSettlements(),
-    ]);
+    await updateBackfillProgress(prisma, syncRun.id, stats, "credentials");
+
+    await updateBackfillProgress(prisma, syncRun.id, stats, "balance");
+    const balance = await client.getBalance();
+
+    await updateBackfillProgress(prisma, syncRun.id, stats, "fills");
+    const fills = await client.getAllFills();
+
+    await updateBackfillProgress(prisma, syncRun.id, stats, "historical_fills");
+    const historicalFills = await readOptionalCollection("historical fills", () => client.getAllHistoricalFills(), stats.warnings);
+
+    await updateBackfillProgress(prisma, syncRun.id, stats, "orders");
+    const orders = await readOptionalCollection("orders", () => client.getAllOrders(), stats.warnings);
+
+    await updateBackfillProgress(prisma, syncRun.id, stats, "historical_orders");
+    const historicalOrders = await readOptionalCollection("historical orders", () => client.getAllHistoricalOrders(), stats.warnings);
+
+    await updateBackfillProgress(prisma, syncRun.id, stats, "positions");
+    const positions = await client.getAllPositions({ count_filter: "position,total_traded" });
+
+    await updateBackfillProgress(prisma, syncRun.id, stats, "settlements");
+    const settlements = await client.getAllSettlements();
 
     const normalizedFills = [
       ...normalizeFillCollection(fills, "portfolio", stats),
@@ -165,6 +229,15 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
     const normalizedSettlements = normalizeSettlementCollection(settlements, stats);
     const fallbackEventTickers = collectFallbackEventTickers(normalizedFills, normalizedOrders, normalizedPositions, normalizedSettlements);
     const marketTickers = Array.from(fallbackEventTickers.keys());
+
+    stats.fills = normalizedFills.filter((fill) => fill.source === "portfolio").length;
+    stats.historicalFills = normalizedFills.filter((fill) => fill.source === "historical").length;
+    stats.orders = normalizedOrders.filter((order) => order.source === "portfolio").length;
+    stats.historicalOrders = normalizedOrders.filter((order) => order.source === "historical").length;
+    stats.positions = normalizedPositions.length;
+    stats.settlements = normalizedSettlements.length;
+
+    await updateBackfillProgress(prisma, syncRun.id, stats, "market_metadata");
     const marketsByTicker = await fetchMarketMetadata(client, marketTickers, stats.warnings);
     const eventTickers = collectEventTickers(marketsByTicker, fallbackEventTickers);
     const eventsByTicker = await fetchEventMetadata(client, Array.from(eventTickers), stats.warnings);
@@ -173,6 +246,8 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
     stats.events = eventTickers.size;
     await ensureMarkets(marketsByTicker, fallbackEventTickers, eventsByTicker);
     stats.markets = marketTickers.length;
+
+    await updateBackfillProgress(prisma, syncRun.id, stats, "database_import");
 
     await prisma.balanceSnapshot.create({
       data: {
@@ -224,9 +299,6 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
         },
       });
     }
-    stats.fills = normalizedFills.filter((fill) => fill.source === "portfolio").length;
-    stats.historicalFills = normalizedFills.filter((fill) => fill.source === "historical").length;
-
     for (const order of normalizedOrders) {
       const market = marketsByTicker.get(order.marketTicker);
       await prisma.order.upsert({
@@ -269,9 +341,6 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
         },
       });
     }
-    stats.orders = normalizedOrders.filter((order) => order.source === "portfolio").length;
-    stats.historicalOrders = normalizedOrders.filter((order) => order.source === "historical").length;
-
     for (const position of normalizedPositions) {
       const market = marketsByTicker.get(position.marketTicker);
       await prisma.position.upsert({
@@ -310,8 +379,6 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
         },
       });
     }
-    stats.positions = normalizedPositions.length;
-
     for (const settlement of normalizedSettlements) {
       const market = marketsByTicker.get(settlement.marketTicker);
       await prisma.settlement.upsert({
@@ -342,7 +409,7 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
         },
       });
     }
-    stats.settlements = normalizedSettlements.length;
+    await updateBackfillProgress(prisma, syncRun.id, stats, "complete");
 
     await prisma.syncRun.update({
       where: { id: syncRun.id },
@@ -374,6 +441,7 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
     };
   } catch (error) {
     const message = publicBackfillError(error);
+    applyBackfillProgress(stats, "failed");
     await prisma.syncRun.update({
       where: { id: syncRun.id },
       data: {
@@ -393,6 +461,7 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
 }
 
 async function createMissingCredentialsSyncRun(appUserId: string) {
+  const stats = buildMissingCredentialsBackfillStats();
   const syncRun = await getPrisma().syncRun.create({
     data: {
       appUserId,
@@ -401,7 +470,10 @@ async function createMissingCredentialsSyncRun(appUserId: string) {
       status: "stub",
       completedAt: new Date(),
       errorMessage: STUB_REASON_AWAITING_KALSHI,
-      stats: { stubReason: STUB_REASON_AWAITING_KALSHI },
+      stats: {
+        stubReason: STUB_REASON_AWAITING_KALSHI,
+        ...stats,
+      },
     },
   });
 
@@ -411,9 +483,80 @@ async function createMissingCredentialsSyncRun(appUserId: string) {
       status: syncRun.status,
       completedAt: syncRun.completedAt?.toISOString() ?? null,
       message: STUB_REASON_AWAITING_KALSHI,
+      stats,
     },
     meta: { source: "stub" as const, stubReason: STUB_REASON_AWAITING_KALSHI },
   };
+}
+
+export function emptyBackfillCounts(): BackfillCounts {
+  return {
+    balanceSnapshots: 0,
+    fills: 0,
+    historicalFills: 0,
+    orders: 0,
+    historicalOrders: 0,
+    positions: 0,
+    settlements: 0,
+    markets: 0,
+    events: 0,
+    skippedRows: 0,
+  };
+}
+
+export function buildMissingCredentialsBackfillStats(): ImportStats {
+  const counts = emptyBackfillCounts();
+  return {
+    ...counts,
+    warnings: [],
+    stage: "credentials",
+    stageLabel: "Kalshi credentials are required before backfill",
+    percent: 0,
+    counts,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function applyBackfillProgress(stats: ImportStats, stage: BackfillProgressStage): BackfillProgress {
+  const detail = BACKFILL_STAGE_DETAILS[stage];
+  const counts = {
+    balanceSnapshots: stats.balanceSnapshots,
+    fills: stats.fills,
+    historicalFills: stats.historicalFills,
+    orders: stats.orders,
+    historicalOrders: stats.historicalOrders,
+    positions: stats.positions,
+    settlements: stats.settlements,
+    markets: stats.markets,
+    events: stats.events,
+    skippedRows: stats.skippedRows,
+  };
+  const updatedAt = new Date().toISOString();
+
+  stats.stage = stage;
+  stats.stageLabel = detail.stageLabel;
+  stats.percent = detail.percent;
+  stats.counts = counts;
+  stats.updatedAt = updatedAt;
+
+  return {
+    stage,
+    stageLabel: detail.stageLabel,
+    percent: detail.percent,
+    counts,
+    warnings: stats.warnings,
+    updatedAt,
+  };
+}
+
+async function updateBackfillProgress(prisma: ReturnType<typeof getPrisma>, syncRunId: string, stats: ImportStats, stage: BackfillProgressStage) {
+  applyBackfillProgress(stats, stage);
+  await prisma.syncRun.update({
+    where: { id: syncRunId },
+    data: {
+      stats: stats as unknown as Prisma.InputJsonValue,
+    },
+  });
 }
 
 async function readOptionalCollection<T>(label: string, loader: () => Promise<T[]>, warnings: string[]) {

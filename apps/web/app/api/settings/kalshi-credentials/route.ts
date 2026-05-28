@@ -10,7 +10,7 @@ export async function GET() {
   const { appUser, response } = await requireAuthenticatedAppUser();
   if (!appUser) return response;
 
-  return apiResponse(await getKalshiCredentialStatus(appUser.id));
+  return apiResponse(await getKalshiCredentialStatus(appUser.id, appUser));
 }
 
 export async function PUT(request: Request) {
@@ -37,7 +37,8 @@ export async function DELETE() {
   const { appUser, response } = await requireAuthenticatedAppUser();
   if (!appUser) return response;
 
-  return apiResponse(await deleteKalshiCredentials(appUser.id));
+  await deleteKalshiCredentials(appUser.id);
+  return apiResponse(await getKalshiCredentialStatus(appUser.id, appUser));
 }
 
 function safeCredentialError(error: unknown) {

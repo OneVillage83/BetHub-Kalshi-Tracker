@@ -41,6 +41,8 @@ pnpm build
 
 Without Clerk keys, `/` renders a setup-required state and protected APIs return `401`. Without `DATABASE_URL` on Netlify, authenticated pages render a database setup error instead of a generic server error. Without per-user Kalshi keys, authenticated data APIs return empty DB data with `Stub: awaiting Kalshi credentials` metadata.
 
+If a personal Kalshi key already exists in Netlify env vars, the owner account can adopt it from Settings. Adoption validates the Netlify-stored key, encrypts it into that owner's `KalshiAccount`, and keeps invited users on their own per-user credentials.
+
 On Netlify, deployments run `pnpm db:generate && pnpm db:migrate:deploy && pnpm --filter @kalshi-tracker/web build`. The migration script runs `prisma migrate deploy` when `DATABASE_URL` exists; if the database is not connected yet, it exits cleanly so the setup UI can deploy. Connect Prisma Postgres in Netlify and redeploy to apply the committed migration.
 
 ## Production env vars
