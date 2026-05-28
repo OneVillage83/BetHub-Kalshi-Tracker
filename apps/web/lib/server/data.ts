@@ -1,5 +1,5 @@
-import { getOrCreatePrimaryAccount, getPrisma, decimalToString } from "@kalshi-tracker/db";
-import { hasKalshiCredentials, kalshiEnvironment, keyIdHint, STUB_REASON_AWAITING_KALSHI, STUB_REASON_LIVE_SYNC } from "../env";
+import { getPrisma, decimalToString } from "@kalshi-tracker/db";
+import { hasKalshiCredentials, STUB_REASON_AWAITING_KALSHI, STUB_REASON_LIVE_SYNC } from "../env";
 
 type SourceState = {
   source: "db" | "stub";
@@ -256,42 +256,5 @@ export async function getSyncStatus(appUserId: string): Promise<{ data: SyncStat
       historicalImport: latest?.status === "success" ? "complete" : credentials ? "pending" : "stubbed",
     },
     meta: credentials ? { source: "stub", stubReason: STUB_REASON_LIVE_SYNC } : sourceState(),
-  };
-}
-
-export async function createBackfillSyncRun(appUserId: string) {
-  const credentials = hasKalshiCredentials();
-  const account = credentials
-    ? await getOrCreatePrimaryAccount({
-        appUserId,
-        environment: kalshiEnvironment(),
-        keyIdHint: keyIdHint(),
-      })
-    : null;
-  const reason = credentials
-    ? "backfill import boundary ready; run worker implementation with Kalshi credentials"
-    : STUB_REASON_AWAITING_KALSHI;
-
-  const syncRun = await getPrisma().syncRun.create({
-    data: {
-      appUserId,
-      kalshiAccountId: account?.id,
-      kind: "backfill",
-      source: "netlify-route",
-      status: "stub",
-      completedAt: new Date(),
-      errorMessage: reason,
-      stats: { stubReason: reason },
-    },
-  });
-
-  return {
-    data: {
-      id: syncRun.id,
-      status: syncRun.status,
-      completedAt: syncRun.completedAt?.toISOString() ?? null,
-      message: reason,
-    },
-    meta: { source: "stub" as const, stubReason: reason },
   };
 }

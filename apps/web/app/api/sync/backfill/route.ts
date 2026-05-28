@@ -1,13 +1,19 @@
-import { apiResponse } from "../../../../lib/api-response";
+import { apiError, apiResponse } from "../../../../lib/api-response";
 import { requireAuthenticatedAppUser } from "../../../../lib/auth";
-import { createBackfillSyncRun } from "../../../../lib/server/data";
+import { runKalshiBackfill } from "../../../../lib/server/backfill";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 export async function POST() {
   const { appUser, response } = await requireAuthenticatedAppUser();
   if (!appUser) return response;
 
-  const result = await createBackfillSyncRun(appUser.id);
-  return apiResponse(result.data, result.meta, { status: 202 });
+  try {
+    const result = await runKalshiBackfill(appUser.id);
+    return apiResponse(result.data, result.meta, { status: result.meta.source === "stub" ? 202 : 200 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Kalshi backfill failed.";
+    return apiError(message, 500);
+  }
 }

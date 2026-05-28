@@ -30,7 +30,7 @@ export default async function SettingsPage() {
         <section className="rounded-lg border border-slate-800 bg-slate-950/80 p-5">
           <h2 className="text-lg font-semibold">Backfill</h2>
           <p className="mt-2 text-sm leading-6 text-slate-500">
-            This Netlify scaffold records sync attempts now and is ready for the real Kalshi import once credentials are present.
+            Run a read-only import of Kalshi balance, fills, historical fills, positions, settlements, and market metadata.
           </p>
           <div className="mt-5">
             <BackfillButton />

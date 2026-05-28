@@ -109,7 +109,7 @@ export class KalshiRestClient {
   }
 
   getAllPositions(query: Record<string, string | number | boolean | undefined> = {}) {
-    return this.paginate("/portfolio/positions", "positions", query);
+    return this.paginate("/portfolio/positions", "market_positions", query);
   }
 
   getSettlements(query: Record<string, string | number | boolean | undefined> = {}) {
