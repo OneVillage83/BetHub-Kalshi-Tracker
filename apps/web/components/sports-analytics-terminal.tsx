@@ -50,6 +50,8 @@ export function SportsAnalyticsTerminal({ data }: { data: SportsAnalyticsData })
     implied: Math.round(row.impliedProbability * 100),
     actual: row.actualWinRate == null ? null : Math.round(row.actualWinRate * 100),
   }));
+  const showDiagnostics =
+    data.diagnostics.classificationWarnings.length > 0 || (!data.hasSportsData && data.diagnostics.totalImportedFills > 0);
 
   return (
     <div className="space-y-4">
@@ -62,7 +64,9 @@ export function SportsAnalyticsTerminal({ data }: { data: SportsAnalyticsData })
         <SportsKpi label="Sports Fee Drag" value={formatMaybeCents(data.kpis.feeDragCents)} tone="negative" />
       </div>
 
-      {!data.hasSportsData ? (
+      {showDiagnostics ? <SportsDiagnosticsPanel diagnostics={data.diagnostics} /> : null}
+
+      {!data.hasSportsData && !showDiagnostics ? (
         <section className="rounded-lg border border-slate-800 bg-slate-950/80 p-5">
           <EmptyState
             title="No sports fills imported yet"
@@ -242,6 +246,57 @@ export function SportsAnalyticsTerminal({ data }: { data: SportsAnalyticsData })
         </div>
       ) : null}
     </div>
+  );
+}
+
+function SportsDiagnosticsPanel({ diagnostics }: { diagnostics: SportsAnalyticsData["diagnostics"] }) {
+  return (
+    <section className="rounded-lg border border-amber-500/25 bg-amber-950/10 p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <h2 className="flex items-center gap-2 text-base font-semibold text-amber-100">
+            <AlertTriangle className="h-4 w-4 text-amber-300" />
+            Sports classification diagnostics
+          </h2>
+          <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-400">
+            <span className="rounded-md border border-slate-800 bg-slate-950/70 px-2 py-1">{diagnostics.totalImportedFills} imported fills</span>
+            <span className="rounded-md border border-slate-800 bg-slate-950/70 px-2 py-1">{diagnostics.classifiedSportsFills} sports-classified fills</span>
+          </div>
+        </div>
+        {diagnostics.classificationWarnings.length ? (
+          <div className="max-w-3xl space-y-1 text-sm text-amber-100/90">
+            {diagnostics.classificationWarnings.map((warning) => (
+              <div key={warning}>{warning}</div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      {diagnostics.unclassifiedFillSamples.length ? (
+        <div className="mt-4 overflow-x-auto rounded-lg border border-slate-800">
+          <table className="w-full min-w-[620px] text-left text-sm">
+            <thead className="bg-slate-900 text-xs uppercase tracking-normal text-slate-500">
+              <tr>
+                <th className="px-3 py-3 font-medium">Market</th>
+                <th className="px-3 py-3 font-medium">Event</th>
+                <th className="px-3 py-3 font-medium">Title</th>
+                <th className="px-3 py-3 font-medium">Category</th>
+              </tr>
+            </thead>
+            <tbody>
+              {diagnostics.unclassifiedFillSamples.map((sample) => (
+                <tr key={`${sample.marketTicker}:${sample.eventTicker ?? "event"}`} className="border-t border-slate-800 bg-slate-950/60">
+                  <td className="px-3 py-3 font-mono text-xs text-slate-300">{sample.marketTicker}</td>
+                  <td className="px-3 py-3 font-mono text-xs text-slate-400">{sample.eventTicker ?? "--"}</td>
+                  <td className="px-3 py-3 text-slate-200">{sample.title ?? "--"}</td>
+                  <td className="px-3 py-3 text-slate-400">{sample.category ?? "--"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </section>
   );
 }
 

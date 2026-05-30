@@ -35,6 +35,15 @@ type EventForClassification = {
   rawJson?: unknown;
 } | null;
 
+type FillForClassification = {
+  marketTicker: string;
+  eventTicker?: string | null;
+  rawJson?: unknown;
+  market: MarketForClassification & { event: EventForClassification };
+};
+
+type SportsClassificationSource = "metadata" | "fill_raw" | "ticker_heuristic" | "heuristic";
+
 export type SportsClassification = {
   marketTicker: string;
   eventTicker: string | null;
@@ -45,7 +54,7 @@ export type SportsClassification = {
   teams: string[];
   primaryTeam: string | null;
   opponentTeam: string | null;
-  classificationSource: "metadata" | "heuristic";
+  classificationSource: SportsClassificationSource;
   confidence: number;
   isSports: boolean;
   rawJson: JsonRecord;
@@ -101,6 +110,17 @@ export type SportsAnalyticsData = {
     teamBias: Array<{ team: string; fills: number; realizedPnlCents: number; roi: number | null }>;
     alerts: Array<{ id: string; title: string; detail: string; tone: "positive" | "negative" | "neutral" }>;
   };
+  diagnostics: {
+    totalImportedFills: number;
+    classifiedSportsFills: number;
+    unclassifiedFillSamples: Array<{
+      marketTicker: string;
+      eventTicker: string | null;
+      title: string | null;
+      category: string | null;
+    }>;
+    classificationWarnings: string[];
+  };
 };
 
 type SportsFill = {
@@ -116,6 +136,7 @@ type SportsFill = {
   priceCents: number;
   feeCents: number;
   createdTime: Date;
+  rawJson: unknown;
   market: MarketForClassification & { event: EventForClassification };
 };
 
@@ -232,7 +253,7 @@ export async function enrichSportsAnalytics(args: {
 
   const classificationsByTicker = new Map<string, SportsClassification>();
   for (const fill of fills) {
-    const classification = classifySportsMarket(fill.market, fill.market.event);
+    const classification = classifySportsFill(fill);
     if (classification.isSports) classificationsByTicker.set(fill.marketTicker, classification);
   }
   for (const position of positions) {
@@ -242,6 +263,9 @@ export async function enrichSportsAnalytics(args: {
 
   await upsertSportsClassifications(args.prisma, Array.from(classificationsByTicker.values()));
   const sportsFills = fills.filter((fill) => classificationsByTicker.has(fill.marketTicker));
+  if (fills.length > 0 && sportsFills.length === 0) {
+    pushWarningOnce(warnings, "sports analytics: imported fills exist, but none matched the sports classifier.");
+  }
   const candlesticks = await importTargetedCandlesticks(args.prisma, args.client, sportsFills, classificationsByTicker, warnings);
   const orderbookSnapshots = await importOpenSportsOrderbooks(args.prisma, args.client, positions, eventPositions, classificationsByTicker, warnings);
   await upsertSportsFillAnalytics(args.prisma, args.kalshiAccountId, sportsFills, classificationsByTicker);
@@ -264,7 +288,7 @@ export async function getSportsAnalytics(appUserId: string): Promise<SportsAnaly
   const accountIds = accounts.map((account) => account.id);
   if (accountIds.length === 0) return emptySportsAnalytics();
 
-  const [fills, fillAnalytics, settlements, positions, eventPositions, orders, storedClassifications] = await Promise.all([
+  const [fills, fillAnalytics, settlements, positions, eventPositions, orders, storedClassifications, latestSyncRun] = await Promise.all([
     prisma.fill.findMany({
       where: { kalshiAccountId: { in: accountIds } },
       include: { market: { include: { event: true } } },
@@ -291,16 +315,22 @@ export async function getSportsAnalytics(appUserId: string): Promise<SportsAnaly
       orderBy: { createdTime: "asc" },
     }),
     prisma.sportsMarketClassification.findMany(),
+    prisma.syncRun.findFirst({
+      where: { appUserId },
+      orderBy: { startedAt: "desc" },
+      select: { status: true, errorMessage: true, stats: true },
+    }),
   ]);
 
   const storedByTicker = new Map(storedClassifications.map((classification) => [classification.marketTicker, storedClassificationToResult(classification)]));
-  const classificationForMarket = (market: MarketForClassification & { event: EventForClassification }) =>
-    storedByTicker.get(market.ticker) ?? classifySportsMarket(market, market.event);
+  const runtimeClassificationsByTicker = new Map(storedByTicker);
+  const classificationForFill = (fill: FillForClassification) => storedByTicker.get(fill.marketTicker) ?? classifySportsFill(fill);
 
   const analyticsByFillId = new Map(fillAnalytics.map((row) => [row.fillId, row]));
   const classifiedFills = fills.reduce<ClassifiedFill[]>((rows, fill) => {
-    const classification = classificationForMarket(fill.market);
+    const classification = classificationForFill(fill);
     if (!classification.isSports) return rows;
+    runtimeClassificationsByTicker.set(fill.marketTicker, classification);
     rows.push({
       fillId: fill.fillId,
       orderId: fill.orderId,
@@ -318,7 +348,11 @@ export async function getSportsAnalytics(appUserId: string): Promise<SportsAnaly
     return rows;
   }, []);
 
-  if (classifiedFills.length === 0) return emptySportsAnalytics();
+  const diagnostics = buildSportsDiagnostics({ fills, classifiedFills, latestSyncRun });
+  if (classifiedFills.length === 0) return emptySportsAnalytics(diagnostics);
+
+  const classificationForMarket = (market: MarketForClassification & { event: EventForClassification }) =>
+    runtimeClassificationsByTicker.get(market.ticker) ?? classifySportsMarket(market, market.event);
 
   const sportsMarkets = new Set(classifiedFills.map((fill) => fill.marketTicker));
   const sportsSettlements = settlements.filter((settlement) => sportsMarkets.has(settlement.marketTicker));
@@ -344,7 +378,7 @@ export async function getSportsAnalytics(appUserId: string): Promise<SportsAnaly
   const calibration = buildCalibrationRows(classifiedFills, sportsSettlements, settlementPnlByMarket);
   const clvDistribution = buildClvDistribution(classifiedFills);
   const entryTiming = buildEntryTimingRows(classifiedFills, sportsSettlements, settlementPnlByMarket);
-  const risk = buildRiskRows(sportsPositions, sportsEventPositions, classificationForMarket, storedByTicker);
+  const risk = buildRiskRows(sportsPositions, sportsEventPositions, classificationForMarket, runtimeClassificationsByTicker);
   const execution = buildExecutionMetrics(sportsOrders, classifiedFills);
   const teamBias = buildTeamBiasRows(classifiedFills, settlementPnlByMarket, costByMarket);
 
@@ -375,50 +409,100 @@ export async function getSportsAnalytics(appUserId: string): Promise<SportsAnaly
       teamBias,
       alerts: buildBehaviorAlerts({ favoritePerformance, teamBias, entryTiming, classifiedFills, settlementPnlByMarket, costByMarket }),
     },
+    diagnostics,
   };
 }
 
+export function classifySportsFill(fill: FillForClassification): SportsClassification {
+  return classifySportsContext(fill.market, fill.market.event, fill);
+}
+
 export function classifySportsMarket(market: MarketForClassification, event: EventForClassification = null): SportsClassification {
+  return classifySportsContext(market, event);
+}
+
+function classifySportsContext(
+  market: MarketForClassification,
+  event: EventForClassification = null,
+  fill: Pick<FillForClassification, "marketTicker" | "eventTicker" | "rawJson"> | null = null,
+): SportsClassification {
+  const rawFill = asRecord(fill?.rawJson);
   const rawMarket = asRecord(market.rawJson);
   const rawEvent = asRecord(event?.rawJson);
-  const corpus = [
+  const marketTicker = fill?.marketTicker ?? market.ticker;
+  const eventTicker =
+    fill?.eventTicker ??
+    market.eventTicker ??
+    event?.ticker ??
+    rawTextFromRecords([rawFill, rawMarket, rawEvent], ["event_ticker", "eventTicker"]) ??
+    null;
+  const tickerCorpus = [
+    marketTicker,
+    eventTicker,
     market.ticker,
+    market.eventTicker,
+    event?.ticker,
+    ...rawStringValues(rawFill, ["market_ticker", "ticker", "event_ticker", "series_ticker"]),
+    ...rawStringValues(rawMarket, ["market_ticker", "ticker", "event_ticker", "series_ticker"]),
+    ...rawStringValues(rawEvent, ["market_ticker", "ticker", "event_ticker", "series_ticker"]),
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const corpus = [
+    tickerCorpus,
     market.title,
     market.subtitle,
     market.category,
     event?.title,
     event?.category,
+    flattenText(rawFill),
     flattenText(rawMarket),
     flattenText(rawEvent),
   ]
     .filter(Boolean)
     .join(" ");
-  const explicitSports = /\bsports?\b/i.test([market.category, event?.category, rawText(rawMarket, ["category"]), rawText(rawEvent, ["category"])].filter(Boolean).join(" "));
-  const league = detectLeague(corpus);
-  const sport = detectSport(corpus, league) ?? (explicitSports ? "Unknown" : null);
-  const isSports = explicitSports || Boolean(league) || Boolean(sport);
-  const teams = extractTeams(market, event, rawMarket, rawEvent);
-  const metadataSource = explicitSports || hasSportsMetadata(rawMarket) || hasSportsMetadata(rawEvent);
+  const marketEventCategoryText = [
+    market.category,
+    event?.category,
+    rawTextFromRecords([rawMarket, rawEvent], ["category", "category_name", "market_category", "event_category", "series_category"]),
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const fillCategoryText = rawTextFromRecords([rawFill], ["category", "category_name", "market_category", "event_category", "series_category"]) ?? "";
+  const explicitMarketEventSports = /\bsports?\b/i.test(marketEventCategoryText);
+  const explicitFillSports = /\bsports?\b/i.test(fillCategoryText);
+  const tickerLeague = detectLeagueFromTicker(tickerCorpus);
+  const league = tickerLeague ?? detectLeague(corpus);
+  const rawSport = rawTextFromRecords([rawFill, rawMarket, rawEvent], ["sport", "sport_name"]);
+  const sport = detectSport([corpus, rawSport].filter(Boolean).join(" "), league) ?? (explicitMarketEventSports || explicitFillSports ? "Unknown" : null);
+  const tickerSignal = Boolean(tickerLeague) || hasSportsTickerSignal(tickerCorpus);
+  const metadataSource = explicitMarketEventSports || hasSportsMetadata(rawMarket) || hasSportsMetadata(rawEvent);
+  const fillRawSource = explicitFillSports || hasSportsMetadata(rawFill);
+  const isSports = metadataSource || fillRawSource || tickerSignal || Boolean(league) || Boolean(sport);
+  const teams = extractTeams(market, event, rawMarket, rawEvent, rawFill);
+  const classificationSource: SportsClassificationSource = metadataSource ? "metadata" : fillRawSource ? "fill_raw" : tickerSignal ? "ticker_heuristic" : "heuristic";
 
   return {
-    marketTicker: market.ticker,
-    eventTicker: market.eventTicker ?? event?.ticker ?? rawText(rawMarket, ["event_ticker"]) ?? rawText(rawEvent, ["event_ticker"]),
-    eventName: event?.title ?? rawText(rawEvent, ["title", "sub_title"]) ?? null,
+    marketTicker,
+    eventTicker,
+    eventName: event?.title ?? rawTextFromRecords([rawEvent, rawFill, rawMarket], ["event_title", "event_name", "title", "sub_title"]) ?? null,
     sport,
     league,
-    marketType: detectMarketType(corpus, rawMarket),
+    marketType: detectMarketType(corpus, rawFill, rawMarket, rawEvent),
     teams,
-    primaryTeam: teams[0] ?? rawText(rawMarket, ["primary_participant_key"]) ?? null,
+    primaryTeam: teams[0] ?? rawTextFromRecords([rawFill, rawMarket, rawEvent], ["primary_participant_key", "primary_team"]) ?? null,
     opponentTeam: teams[1] ?? null,
-    classificationSource: metadataSource ? "metadata" : "heuristic",
-    confidence: !isSports ? 0 : metadataSource && league ? 90 : metadataSource ? 75 : league ? 70 : 45,
+    classificationSource,
+    confidence: sportsClassificationConfidence({ isSports, metadataSource, fillRawSource, tickerSignal, league, sport }),
     isSports,
     rawJson: {
-      marketTicker: market.ticker,
+      marketTicker,
+      eventTicker,
       marketCategory: market.category,
       eventCategory: event?.category ?? null,
       matchedLeague: league,
       matchedSport: sport,
+      classificationSource,
     },
   };
 }
@@ -1182,14 +1266,76 @@ function storedClassificationToResult(row: {
     teams: row.teams,
     primaryTeam: row.primaryTeam,
     opponentTeam: row.opponentTeam,
-    classificationSource: row.classificationSource === "metadata" ? "metadata" : "heuristic",
+    classificationSource: sportsClassificationSource(row.classificationSource),
     confidence: row.confidence,
     isSports: true,
     rawJson: asRecord(row.rawJson),
   };
 }
 
-function emptySportsAnalytics(): SportsAnalyticsData {
+function sportsClassificationSource(value: string): SportsClassificationSource {
+  if (value === "metadata" || value === "fill_raw" || value === "ticker_heuristic") return value;
+  return "heuristic";
+}
+
+function buildSportsDiagnostics(input: {
+  fills: Array<FillForClassification>;
+  classifiedFills: ClassifiedFill[];
+  latestSyncRun?: { status: unknown; errorMessage: string | null; stats: unknown } | null;
+}): SportsAnalyticsData["diagnostics"] {
+  const classifiedTickers = new Set(input.classifiedFills.map((fill) => fill.marketTicker));
+  const unclassified = input.fills.filter((fill) => !classifiedTickers.has(fill.marketTicker));
+  const warnings: string[] = [];
+  const syncWarnings = syncWarningsFromStats(input.latestSyncRun?.stats).filter((warning) => /metadata|sports|market|event|classif/i.test(warning));
+
+  if (input.fills.length > 0 && input.classifiedFills.length === 0) {
+    warnings.push("Imported fills were found, but none matched the sports classifier.");
+  }
+  if (unclassified.some((fill) => isPlaceholderMarket(fill.market) || isPlaceholderEvent(fill.market.event))) {
+    warnings.push("Some imported fills still have placeholder-only market or event metadata.");
+  }
+  if (input.latestSyncRun?.status === "failed" && input.latestSyncRun.errorMessage) {
+    warnings.push(input.latestSyncRun.errorMessage);
+  }
+
+  return {
+    totalImportedFills: input.fills.length,
+    classifiedSportsFills: input.classifiedFills.length,
+    unclassifiedFillSamples: unclassified.slice(0, 6).map((fill) => ({
+      marketTicker: fill.marketTicker,
+      eventTicker: fill.eventTicker ?? fill.market.eventTicker ?? fill.market.event?.ticker ?? null,
+      title: fill.market.title ?? rawText(asRecord(fill.rawJson), ["title", "market_title"]) ?? null,
+      category: fill.market.category ?? rawText(asRecord(fill.rawJson), ["category", "market_category"]) ?? null,
+    })),
+    classificationWarnings: uniqueStrings([...warnings, ...syncWarnings]).slice(0, 8),
+  };
+}
+
+function syncWarningsFromStats(stats: unknown) {
+  const row = asRecord(stats);
+  const warnings = row.warnings;
+  if (!Array.isArray(warnings)) return [];
+  return warnings.filter((warning): warning is string => typeof warning === "string" && warning.trim().length > 0);
+}
+
+function isPlaceholderMarket(market: MarketForClassification) {
+  return rawText(asRecord(market.rawJson), ["source"]) === "kalshi-backfill-placeholder";
+}
+
+function isPlaceholderEvent(event: EventForClassification) {
+  return event ? rawText(asRecord(event.rawJson), ["source"]) === "kalshi-backfill-placeholder" : false;
+}
+
+function emptySportsDiagnostics(): SportsAnalyticsData["diagnostics"] {
+  return {
+    totalImportedFills: 0,
+    classifiedSportsFills: 0,
+    unclassifiedFillSamples: [],
+    classificationWarnings: [],
+  };
+}
+
+function emptySportsAnalytics(diagnostics: SportsAnalyticsData["diagnostics"] = emptySportsDiagnostics()): SportsAnalyticsData {
   return {
     hasSportsData: false,
     kpis: {
@@ -1236,6 +1382,7 @@ function emptySportsAnalytics(): SportsAnalyticsData {
       teamBias: [],
       alerts: [],
     },
+    diagnostics,
   };
 }
 
@@ -1326,6 +1473,37 @@ function marketCloseTime(market: MarketForClassification) {
   return market.closeTime ?? market.expirationTime ?? market.settlementTime ?? null;
 }
 
+function detectLeagueFromTicker(corpus: string) {
+  const tokens = corpus
+    .toUpperCase()
+    .split(/[^A-Z0-9]+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+  const prefixes: Array<[string, RegExp]> = [
+    ["NFL", /^(?:KX)?(?:NFL|SUPERBOWL|SB|PROFOOTBALL)/],
+    ["NCAAF", /^(?:KX)?(?:NCAAF|CFB|COLLEGEFOOTBALL)/],
+    ["NBA", /^(?:KX)?(?:NBA|PROBASKETBALL)/],
+    ["WNBA", /^(?:KX)?WNBA/],
+    ["NCAAB", /^(?:KX)?(?:NCAAB|CBB|NCAAMB|NCAAWB|COLLEGEBASKETBALL)/],
+    ["MLB", /^(?:KX)?(?:MLB|PROBASEBALL)/],
+    ["NHL", /^(?:KX)?(?:NHL|PROHOCKEY)/],
+    ["MLS", /^(?:KX)?(?:MLS|MAJORLEAGUESOCCER)/],
+    ["EPL", /^(?:KX)?(?:EPL|PREMIERLEAGUE)/],
+    ["UCL", /^(?:KX)?(?:UCL|CHAMPIONSLEAGUE)/],
+    ["UFC", /^(?:KX)?(?:UFC|MMA)/],
+    ["PGA", /^(?:KX)?(?:PGA|GOLF)/],
+    ["Tennis", /^(?:KX)?(?:TENNIS|ATP|WTA)/],
+    ["NASCAR", /^(?:KX)?(?:NASCAR|F1|FORMULA1|MOTORSPORT)/],
+    ["Esports", /^(?:KX)?(?:ESPORTS|LOL|VALORANT|CSGO|CS2)/],
+  ];
+
+  for (const token of tokens) {
+    const league = prefixes.find(([, pattern]) => pattern.test(token))?.[0];
+    if (league) return league;
+  }
+  return null;
+}
+
 function detectLeague(corpus: string) {
   const patterns: Array<[string, RegExp]> = [
     ["NFL", /\b(NFL|Pro Football)\b/i],
@@ -1366,8 +1544,32 @@ function detectSport(corpus: string, league: string | null) {
   return null;
 }
 
-function detectMarketType(corpus: string, rawMarket: JsonRecord) {
-  const explicit = rawText(rawMarket, ["market_type", "type"]);
+function hasSportsTickerSignal(corpus: string) {
+  return /\bKX(?:SPORTS?|NFL|NCAAF|CFB|NBA|WNBA|NCAAB|CBB|MLB|NHL|MLS|EPL|UCL|UFC|MMA|PGA|GOLF|TENNIS|ATP|WTA|NASCAR|F1|ESPORTS?)\b/i.test(corpus);
+}
+
+function sportsClassificationConfidence(input: {
+  isSports: boolean;
+  metadataSource: boolean;
+  fillRawSource: boolean;
+  tickerSignal: boolean;
+  league: string | null;
+  sport: string | null;
+}) {
+  if (!input.isSports) return 0;
+  if (input.metadataSource && input.league) return 90;
+  if (input.metadataSource) return 80;
+  if (input.fillRawSource && input.league) return 84;
+  if (input.fillRawSource) return 76;
+  if (input.tickerSignal && input.league) return 78;
+  if (input.tickerSignal) return 62;
+  if (input.league) return 70;
+  if (input.sport) return 55;
+  return 45;
+}
+
+function detectMarketType(corpus: string, ...records: JsonRecord[]) {
+  const explicit = rawTextFromRecords(records, ["market_type", "type", "market_kind"]);
   if (explicit && explicit.toLowerCase() !== "binary") return titleCase(explicit);
   if (/\b(spread|cover)\b/i.test(corpus)) return "Spread";
   if (/\b(total|over\/under|over|under|points|runs|goals)\b/i.test(corpus)) return "Total";
@@ -1377,10 +1579,25 @@ function detectMarketType(corpus: string, rawMarket: JsonRecord) {
   return "Other";
 }
 
-function extractTeams(market: MarketForClassification, event: EventForClassification, rawMarket: JsonRecord, rawEvent: JsonRecord) {
+function extractTeams(market: MarketForClassification, event: EventForClassification, ...records: JsonRecord[]) {
+  const teamKeys = [
+    "home_team",
+    "away_team",
+    "home_team_name",
+    "away_team_name",
+    "team",
+    "team_name",
+    "opponent",
+    "opponent_team",
+    "participant",
+    "participant_name",
+    "participants",
+    "competitor",
+    "competitor_name",
+    "competitors",
+  ];
   const explicitTeams = uniqueStrings([
-    ...rawStringValues(rawMarket, ["home_team", "away_team", "team", "opponent", "participant", "participants", "competitors"]),
-    ...rawStringValues(rawEvent, ["home_team", "away_team", "team", "opponent", "participant", "participants", "competitors"]),
+    ...records.flatMap((record) => rawStringValues(record, teamKeys)),
   ]).slice(0, 4);
   if (explicitTeams.length) return explicitTeams;
 
@@ -1392,20 +1609,28 @@ function extractTeams(market: MarketForClassification, event: EventForClassifica
 
 function rawStringValues(record: JsonRecord, keys: string[]) {
   const values: string[] = [];
-  const wanted = new Set(keys);
-  const visit = (value: unknown, key?: string) => {
-    if (key && wanted.has(key)) {
+  const wanted = new Set(keys.map((key) => key.toLowerCase()));
+  const visit = (value: unknown, key?: string, collectAll = false) => {
+    if (collectAll && typeof value === "string" && value.trim()) {
+      values.push(value.trim());
+      return;
+    }
+    if (key && wanted.has(key.toLowerCase())) {
       if (typeof value === "string" && value.trim()) values.push(value.trim());
       if (Array.isArray(value)) {
-        for (const entry of value) visit(entry);
+        for (const entry of value) visit(entry, undefined, true);
       }
       if (value && typeof value === "object" && !Array.isArray(value)) {
-        for (const nested of Object.values(value)) visit(nested);
+        for (const nested of Object.values(value)) visit(nested, undefined, true);
       }
       return;
     }
+    if (collectAll && Array.isArray(value)) {
+      for (const entry of value) visit(entry, undefined, true);
+      return;
+    }
     if (value && typeof value === "object" && !Array.isArray(value)) {
-      for (const [nestedKey, nested] of Object.entries(value)) visit(nested, nestedKey);
+      for (const [nestedKey, nested] of Object.entries(value)) visit(nested, nestedKey, collectAll);
     }
   };
   visit(record);
@@ -1414,14 +1639,23 @@ function rawStringValues(record: JsonRecord, keys: string[]) {
 
 function hasSportsMetadata(record: JsonRecord) {
   const text = flattenText(record);
-  return /\b(Sports|competition|league|home_team|away_team|participants|competitors)\b/i.test(text);
+  return /\b(Sports?|sport_name|competition|league|home_team|away_team|team_name|participants|competitors)\b/i.test(text);
 }
 
 function rawText(record: JsonRecord, keys: string[]) {
+  const lowerKeyMap = new Map(Object.keys(record).map((key) => [key.toLowerCase(), key]));
   for (const key of keys) {
-    const value = record[key];
+    const value = record[key] ?? record[lowerKeyMap.get(key.toLowerCase()) ?? ""];
     if (typeof value === "string" && value.trim()) return value.trim();
     if (typeof value === "number" && Number.isFinite(value)) return value.toString();
+  }
+  return null;
+}
+
+function rawTextFromRecords(records: JsonRecord[], keys: string[]) {
+  for (const record of records) {
+    const value = rawText(record, keys);
+    if (value) return value;
   }
   return null;
 }
