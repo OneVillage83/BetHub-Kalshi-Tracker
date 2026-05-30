@@ -76,6 +76,9 @@ model KalshiAccount {
   balances    BalanceSnapshot[]
   syncRuns    SyncRun[]
   sportsFillAnalytics SportsFillAnalytics[]
+  analyticsDailyRollups AnalyticsDailyRollup[]
+  analyticsFillMetrics AnalyticsFillMetric[]
+  analyticsPositionMetrics AnalyticsPositionMetric[]
 
   @@index([appUserId])
 }
@@ -110,6 +113,8 @@ model Market {
   candlesticks   MarketCandlestick[]
   orderbookSnapshots OrderbookSnapshot[]
   sportsFillAnalytics SportsFillAnalytics[]
+  analyticsFillMetrics AnalyticsFillMetric[]
+  analyticsPositionMetrics AnalyticsPositionMetric[]
 }
 
 model Event {
@@ -246,6 +251,102 @@ model SportsFillAnalytics {
   @@unique([kalshiAccountId, fillId])
   @@index([kalshiAccountId, marketTicker])
   @@index([sport, league])
+}
+
+model AnalyticsDailyRollup {
+  id                   String   @id @default(cuid())
+  kalshiAccountId      String
+  date                 DateTime
+  equityCents          Int
+  cashBalanceCents     Int
+  portfolioValueCents  Int
+  realizedPnlCents     Int
+  unrealizedPnlCents   Int
+  totalPnlCents        Int
+  grossPnlCents        Int
+  feesCents            Int
+  exposureCents        Int
+  drawdownCents        Int
+  costBasisCents       Int
+  fillCount            Int      @default(0)
+  orderCount           Int      @default(0)
+  settlementCount      Int      @default(0)
+  rawJson              Json?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  account              KalshiAccount @relation(fields: [kalshiAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([kalshiAccountId, date])
+  @@index([kalshiAccountId, date])
+}
+
+model AnalyticsFillMetric {
+  id                         String      @id @default(cuid())
+  kalshiAccountId            String
+  fillId                     String
+  orderId                    String?
+  marketTicker               String
+  eventTicker                String?
+  category                   String?
+  tags                       String[]    @default([])
+  side                       OutcomeSide @default(unknown)
+  action                     String?
+  entryPriceCents            Int
+  priceBucket                String
+  contractCount              Decimal     @db.Decimal(20, 4)
+  costCents                  Int
+  feeCents                   Int         @default(0)
+  clv1hCents                 Int?
+  clv24hCents                Int?
+  clvCloseCents              Int?
+  brierScore                 Decimal?    @db.Decimal(12, 8)
+  settled                    Boolean     @default(false)
+  won                        Boolean?
+  realizedPnlCents           Int?
+  orderCreatedAt             DateTime?
+  timeToFillSeconds          Int?
+  nearestOrderbookObservedAt DateTime?
+  midpointCents              Int?
+  spreadCents                Int?
+  slippageCents              Int?
+  rawJson                    Json?
+  createdAt                  DateTime    @default(now())
+  updatedAt                  DateTime    @updatedAt
+
+  account                    KalshiAccount @relation(fields: [kalshiAccountId], references: [id], onDelete: Cascade)
+  market                     Market        @relation(fields: [marketTicker], references: [ticker], onDelete: Cascade)
+
+  @@unique([kalshiAccountId, fillId])
+  @@index([kalshiAccountId, marketTicker])
+  @@index([category])
+}
+
+model AnalyticsPositionMetric {
+  id                  String      @id @default(cuid())
+  kalshiAccountId     String
+  metricDate          DateTime    @default(now())
+  marketTicker        String
+  eventTicker         String?
+  category            String?
+  side                OutcomeSide @default(unknown)
+  positionContracts   Decimal     @default(0) @db.Decimal(20, 4)
+  exposureCents       Int
+  unrealizedPnlCents  Int
+  realizedPnlCents    Int
+  worstCaseLossCents  Int
+  closeDate           DateTime?
+  concentrationWeight Decimal?    @db.Decimal(12, 8)
+  rawJson             Json?
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  account             KalshiAccount @relation(fields: [kalshiAccountId], references: [id], onDelete: Cascade)
+  market              Market        @relation(fields: [marketTicker], references: [ticker], onDelete: Cascade)
+
+  @@unique([kalshiAccountId, metricDate, marketTicker])
+  @@index([kalshiAccountId, metricDate])
+  @@index([category])
 }
 
 model Order {

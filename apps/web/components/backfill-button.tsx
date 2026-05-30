@@ -199,6 +199,9 @@ function emptyCounts() {
     sportsFills: 0,
     candlesticks: 0,
     orderbookSnapshots: 0,
+    analyticsDailyRollups: 0,
+    analyticsFillMetrics: 0,
+    analyticsPositionMetrics: 0,
     skippedRows: 0,
   };
 }

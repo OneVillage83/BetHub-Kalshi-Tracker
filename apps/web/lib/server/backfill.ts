@@ -5,6 +5,7 @@ import { Prisma } from "@prisma/client";
 import { STUB_REASON_AWAITING_KALSHI } from "../env";
 import type { AuthenticatedAppUser } from "../auth";
 import { buildKalshiClientForAppUser, getKalshiCredentialStatus } from "./kalshi-credentials";
+import { enrichGeneralAnalytics } from "./general-analytics";
 import { enrichSportsAnalytics } from "./sports-analytics";
 
 type JsonRecord = Record<string, unknown>;
@@ -20,6 +21,7 @@ export type BackfillProgressStage =
   | "settlements"
   | "market_metadata"
   | "sports_analytics"
+  | "analytics_metrics"
   | "database_import"
   | "complete"
   | "failed";
@@ -45,6 +47,9 @@ export type BackfillCounts = {
   sportsFills: number;
   candlesticks: number;
   orderbookSnapshots: number;
+  analyticsDailyRollups: number;
+  analyticsFillMetrics: number;
+  analyticsPositionMetrics: number;
   skippedRows: number;
 };
 
@@ -175,7 +180,8 @@ const BACKFILL_STAGE_DETAILS: Record<BackfillProgressStage, { stageLabel: string
   settlements: { stageLabel: "Fetching settlements", percent: 76 },
   market_metadata: { stageLabel: "Enriching market metadata", percent: 86 },
   database_import: { stageLabel: "Saving imported data", percent: 94 },
-  sports_analytics: { stageLabel: "Building sports analytics", percent: 97 },
+  sports_analytics: { stageLabel: "Building sports analytics", percent: 96 },
+  analytics_metrics: { stageLabel: "Building analytics metrics", percent: 98 },
   complete: { stageLabel: "Backfill complete", percent: 100 },
   failed: { stageLabel: "Backfill failed", percent: 100 },
 };
@@ -323,6 +329,14 @@ export async function runKalshiBackfill(appUser: AuthenticatedAppUser, options: 
     await enrichSportsAnalyticsBestEffort({
       prisma,
       client,
+      kalshiAccountId: account.id,
+      syncRunId: syncRun.id,
+      stats,
+    });
+    await enrichGeneralAnalyticsBestEffort({
+      prisma,
+      client,
+      appUserId: appUser.id,
       kalshiAccountId: account.id,
       syncRunId: syncRun.id,
       stats,
@@ -719,6 +733,9 @@ export function emptyBackfillCounts(): BackfillCounts {
     sportsFills: 0,
     candlesticks: 0,
     orderbookSnapshots: 0,
+    analyticsDailyRollups: 0,
+    analyticsFillMetrics: 0,
+    analyticsPositionMetrics: 0,
     skippedRows: 0,
   };
 }
@@ -753,6 +770,9 @@ export function applyBackfillProgress(stats: ImportStats, stage: BackfillProgres
     sportsFills: stats.sportsFills,
     candlesticks: stats.candlesticks,
     orderbookSnapshots: stats.orderbookSnapshots,
+    analyticsDailyRollups: stats.analyticsDailyRollups,
+    analyticsFillMetrics: stats.analyticsFillMetrics,
+    analyticsPositionMetrics: stats.analyticsPositionMetrics,
     skippedRows: stats.skippedRows,
   };
   const updatedAt = new Date().toISOString();
@@ -1229,6 +1249,35 @@ async function enrichSportsAnalyticsBestEffort(args: {
   }
 }
 
+async function enrichGeneralAnalyticsBestEffort(args: {
+  prisma: ReturnType<typeof getPrisma>;
+  client: KalshiRestClient;
+  appUserId: string;
+  kalshiAccountId: string;
+  syncRunId: string;
+  stats: ImportStats;
+}) {
+  try {
+    await updateBackfillProgress(args.prisma, args.syncRunId, args.stats, "analytics_metrics");
+    const result = await enrichGeneralAnalytics({
+      prisma: args.prisma,
+      client: args.client,
+      appUserId: args.appUserId,
+      kalshiAccountId: args.kalshiAccountId,
+    });
+    args.stats.analyticsDailyRollups = result.analyticsDailyRollups;
+    args.stats.analyticsFillMetrics = result.analyticsFillMetrics;
+    args.stats.analyticsPositionMetrics = result.analyticsPositionMetrics;
+    args.stats.candlesticks += result.candlesticks;
+    args.stats.orderbookSnapshots += result.orderbookSnapshots;
+    for (const warning of result.warnings) pushWarningOnce(args.stats.warnings, warning);
+    await saveBackfillStats(args.prisma, args.syncRunId, args.stats);
+  } catch (error) {
+    pushWarningOnce(args.stats.warnings, `analytics metrics: ${publicBackfillError(error)}`);
+    await saveBackfillStats(args.prisma, args.syncRunId, args.stats);
+  }
+}
+
 async function enrichOptionalMetadata(args: {
   prisma: ReturnType<typeof getPrisma>;
   client: KalshiRestClient;
@@ -1637,6 +1686,9 @@ function countsFromStatsRecord(row: Record<string, unknown> | null): BackfillCou
     sportsFills: numberField(counts?.sportsFills),
     candlesticks: numberField(counts?.candlesticks),
     orderbookSnapshots: numberField(counts?.orderbookSnapshots),
+    analyticsDailyRollups: numberField(counts?.analyticsDailyRollups),
+    analyticsFillMetrics: numberField(counts?.analyticsFillMetrics),
+    analyticsPositionMetrics: numberField(counts?.analyticsPositionMetrics),
     skippedRows: numberField(counts?.skippedRows),
   };
 }

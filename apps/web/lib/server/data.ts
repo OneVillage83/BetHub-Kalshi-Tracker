@@ -435,6 +435,9 @@ function countsFromStats(stats: unknown): BackfillCounts | null {
     sportsFills: numberField(counts.sportsFills),
     candlesticks: numberField(counts.candlesticks),
     orderbookSnapshots: numberField(counts.orderbookSnapshots),
+    analyticsDailyRollups: numberField(counts.analyticsDailyRollups),
+    analyticsFillMetrics: numberField(counts.analyticsFillMetrics),
+    analyticsPositionMetrics: numberField(counts.analyticsPositionMetrics),
     skippedRows: numberField(counts.skippedRows),
   };
 }
@@ -468,6 +471,9 @@ function emptyCounts(): BackfillCounts {
     sportsFills: 0,
     candlesticks: 0,
     orderbookSnapshots: 0,
+    analyticsDailyRollups: 0,
+    analyticsFillMetrics: 0,
+    analyticsPositionMetrics: 0,
     skippedRows: 0,
   };
 }
