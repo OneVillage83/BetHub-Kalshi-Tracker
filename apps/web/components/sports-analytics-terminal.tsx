@@ -281,6 +281,7 @@ function SportsDiagnosticsPanel({ diagnostics }: { diagnostics: SportsAnalyticsD
                 <th className="px-3 py-3 font-medium">Event</th>
                 <th className="px-3 py-3 font-medium">Title</th>
                 <th className="px-3 py-3 font-medium">Category</th>
+                <th className="px-3 py-3 font-medium">Reason</th>
               </tr>
             </thead>
             <tbody>
@@ -290,6 +291,7 @@ function SportsDiagnosticsPanel({ diagnostics }: { diagnostics: SportsAnalyticsD
                   <td className="px-3 py-3 font-mono text-xs text-slate-400">{sample.eventTicker ?? "--"}</td>
                   <td className="px-3 py-3 text-slate-200">{sample.title ?? "--"}</td>
                   <td className="px-3 py-3 text-slate-400">{sample.category ?? "--"}</td>
+                  <td className="px-3 py-3 text-slate-400">{sample.reason}</td>
                 </tr>
               ))}
             </tbody>

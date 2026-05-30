@@ -90,6 +90,69 @@ describe("sports analytics helpers", () => {
     expect(classification.classificationSource).toBe("fill_raw");
   });
 
+  it("classifies Kalshi MVESPORTS multi-game exotics from team-heavy titles", () => {
+    const classification = classifySportsFill({
+      marketTicker: "KXMVESPORTSMULTIGAMEEXTENDED-S20260F52F5A155F-AD993C2E8CA",
+      eventTicker: "KXMVESPORTSMULTIGAMEEXTENDED-S20260F52F5A155F",
+      rawJson: {
+        market_ticker: "KXMVESPORTSMULTIGAMEEXTENDED-S20260F52F5A155F-AD993C2E8CA",
+        event_ticker: "KXMVESPORTSMULTIGAMEEXTENDED-S20260F52F5A155F",
+      },
+      market: {
+        ticker: "KXMVESPORTSMULTIGAMEEXTENDED-S20260F52F5A155F-AD993C2E8CA",
+        eventTicker: "KXMVESPORTSMULTIGAMEEXTENDED-S20260F52F5A155F",
+        title: "yes Philadelphia,yes Toronto,yes New York M,yes Milwaukee,yes Houston,yes New York Y,yes San Francisco,yes Los Angeles D",
+        category: "Exotics",
+        rawJson: { category: "Exotics" },
+        event: {
+          ticker: "KXMVESPORTSMULTIGAMEEXTENDED-S20260F52F5A155F",
+          rawJson: { category: "Exotics" },
+        },
+      },
+    });
+
+    expect(classification.isSports).toBe(true);
+    expect(classification.league).toBe("MLB");
+    expect(classification.sport).toBe("Baseball");
+    expect(classification.marketType).toBe("Multi-game exotic");
+    expect(classification.teams).toEqual(expect.arrayContaining(["New York Mets", "New York Yankees", "Los Angeles Dodgers"]));
+    expect(classification.classificationSource).toBe("ticker_heuristic");
+  });
+
+  it("classifies Kalshi MVECROSSCATEGORY exotics only when team evidence exists", () => {
+    const sportsClassification = classifySportsFill({
+      marketTicker: "KXMVECROSSCATEGORY-S202668DA68FE731-DA6648136AF",
+      eventTicker: "KXMVECROSSCATEGORY-S202668DA68FE731",
+      rawJson: { market_ticker: "KXMVECROSSCATEGORY-S202668DA68FE731-DA6648136AF" },
+      market: {
+        ticker: "KXMVECROSSCATEGORY-S202668DA68FE731-DA6648136AF",
+        eventTicker: "KXMVECROSSCATEGORY-S202668DA68FE731",
+        title: "yes Philadelphia,yes Toronto,yes New York M,yes Milwaukee",
+        category: "Exotics",
+        rawJson: { category: "Exotics" },
+        event: null,
+      },
+    });
+    const genericClassification = classifySportsFill({
+      marketTicker: "KXMVECROSSCATEGORY-S202668DA68FE731-DA6648136AF",
+      eventTicker: "KXMVECROSSCATEGORY-S202668DA68FE731",
+      rawJson: { market_ticker: "KXMVECROSSCATEGORY-S202668DA68FE731-DA6648136AF" },
+      market: {
+        ticker: "KXMVECROSSCATEGORY-S202668DA68FE731-DA6648136AF",
+        eventTicker: "KXMVECROSSCATEGORY-S202668DA68FE731",
+        title: "yes inflation,yes interest rates,yes unemployment",
+        category: "Exotics",
+        rawJson: { category: "Exotics" },
+        event: null,
+      },
+    });
+
+    expect(sportsClassification.isSports).toBe(true);
+    expect(sportsClassification.league).toBe("MLB");
+    expect(sportsClassification.marketType).toBe("Multi-game exotic");
+    expect(genericClassification.isSports).toBe(false);
+  });
+
   it("buckets chosen-side entry prices", () => {
     expect(priceBucketForCents(12)).toBe("Longshot");
     expect(priceBucketForCents(32)).toBe("Underdog");

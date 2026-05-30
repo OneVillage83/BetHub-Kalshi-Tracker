@@ -118,6 +118,7 @@ export type SportsAnalyticsData = {
       eventTicker: string | null;
       title: string | null;
       category: string | null;
+      reason: string;
     }>;
     classificationWarnings: string[];
   };
@@ -227,6 +228,13 @@ type GroupMetric = {
   wins: number;
   settled: number;
   impliedSum: number;
+};
+
+type TeamAliasMatch = {
+  team: string;
+  league: string;
+  sport: string;
+  confidence: number;
 };
 
 export async function enrichSportsAnalytics(args: {
@@ -471,15 +479,27 @@ function classifySportsContext(
   const fillCategoryText = rawTextFromRecords([rawFill], ["category", "category_name", "market_category", "event_category", "series_category"]) ?? "";
   const explicitMarketEventSports = /\bsports?\b/i.test(marketEventCategoryText);
   const explicitFillSports = /\bsports?\b/i.test(fillCategoryText);
+  const explicitExotics = /\bexotics?\b/i.test([marketEventCategoryText, fillCategoryText].filter(Boolean).join(" "));
+  const kalshiSportsFamilySignal = hasKalshiSportsFamilyTickerSignal(tickerCorpus);
+  const crossCategorySignal = hasKalshiCrossCategoryTickerSignal(tickerCorpus);
+  const teamMatches = detectSportsTeamAliases([
+    market.title,
+    market.subtitle,
+    event?.title,
+    rawTextFromRecords([rawFill, rawMarket, rawEvent], ["title", "sub_title", "event_title", "event_name", "market_title"]),
+  ]);
+  const teamLeague = inferLeagueFromTeamAliases(teamMatches);
+  const teamEvidenceSignal = teamMatches.length >= 2 || teamMatches.some((match) => match.confidence >= 90);
   const tickerLeague = detectLeagueFromTicker(tickerCorpus);
-  const league = tickerLeague ?? detectLeague(corpus);
+  const league = tickerLeague ?? detectLeague(corpus) ?? teamLeague;
   const rawSport = rawTextFromRecords([rawFill, rawMarket, rawEvent], ["sport", "sport_name"]);
   const sport = detectSport([corpus, rawSport].filter(Boolean).join(" "), league) ?? (explicitMarketEventSports || explicitFillSports ? "Unknown" : null);
-  const tickerSignal = Boolean(tickerLeague) || hasSportsTickerSignal(tickerCorpus);
+  const tickerSignal = Boolean(tickerLeague) || hasSportsTickerSignal(tickerCorpus) || kalshiSportsFamilySignal || (crossCategorySignal && teamEvidenceSignal);
+  const exoticsSportsSignal = explicitExotics && (kalshiSportsFamilySignal || teamEvidenceSignal || Boolean(league));
   const metadataSource = explicitMarketEventSports || hasSportsMetadata(rawMarket) || hasSportsMetadata(rawEvent);
   const fillRawSource = explicitFillSports || hasSportsMetadata(rawFill);
-  const isSports = metadataSource || fillRawSource || tickerSignal || Boolean(league) || Boolean(sport);
-  const teams = extractTeams(market, event, rawMarket, rawEvent, rawFill);
+  const isSports = metadataSource || fillRawSource || tickerSignal || exoticsSportsSignal || Boolean(league) || Boolean(sport);
+  const teams = extractTeams(market, event, teamMatches, rawMarket, rawEvent, rawFill);
   const classificationSource: SportsClassificationSource = metadataSource ? "metadata" : fillRawSource ? "fill_raw" : tickerSignal ? "ticker_heuristic" : "heuristic";
 
   return {
@@ -502,6 +522,10 @@ function classifySportsContext(
       eventCategory: event?.category ?? null,
       matchedLeague: league,
       matchedSport: sport,
+      matchedTeams: teams,
+      kalshiSportsFamilySignal,
+      crossCategorySignal,
+      exoticsSportsSignal,
       classificationSource,
     },
   };
@@ -1306,6 +1330,7 @@ function buildSportsDiagnostics(input: {
       eventTicker: fill.eventTicker ?? fill.market.eventTicker ?? fill.market.event?.ticker ?? null,
       title: fill.market.title ?? rawText(asRecord(fill.rawJson), ["title", "market_title"]) ?? null,
       category: fill.market.category ?? rawText(asRecord(fill.rawJson), ["category", "market_category"]) ?? null,
+      reason: unclassifiedSportsReason(fill),
     })),
     classificationWarnings: uniqueStrings([...warnings, ...syncWarnings]).slice(0, 8),
   };
@@ -1324,6 +1349,25 @@ function isPlaceholderMarket(market: MarketForClassification) {
 
 function isPlaceholderEvent(event: EventForClassification) {
   return event ? rawText(asRecord(event.rawJson), ["source"]) === "kalshi-backfill-placeholder" : false;
+}
+
+function unclassifiedSportsReason(fill: FillForClassification) {
+  const rawFill = asRecord(fill.rawJson);
+  const rawMarket = asRecord(fill.market.rawJson);
+  const rawEvent = asRecord(fill.market.event?.rawJson);
+  const tickerCorpus = [fill.marketTicker, fill.eventTicker, fill.market.ticker, fill.market.eventTicker, fill.market.event?.ticker].filter(Boolean).join(" ");
+  const categoryText = [
+    fill.market.category,
+    fill.market.event?.category,
+    rawTextFromRecords([rawFill, rawMarket, rawEvent], ["category", "category_name", "market_category", "event_category", "series_category"]),
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  if (isPlaceholderMarket(fill.market) || isPlaceholderEvent(fill.market.event)) return "Placeholder metadata; no sports signal found yet";
+  if (hasKalshiCrossCategoryTickerSignal(tickerCorpus)) return "Cross-category ticker without enough team evidence";
+  if (/\bexotics?\b/i.test(categoryText)) return "Exotics category without matched sports ticker or team evidence";
+  return "No sports league, team, category, or ticker signal matched";
 }
 
 function emptySportsDiagnostics(): SportsAnalyticsData["diagnostics"] {
@@ -1473,6 +1517,43 @@ function marketCloseTime(market: MarketForClassification) {
   return market.closeTime ?? market.expirationTime ?? market.settlementTime ?? null;
 }
 
+const SPORTS_TEAM_ALIASES: Array<{
+  team: string;
+  league: string;
+  sport: string;
+  confidence: number;
+  aliases: string[];
+}> = [
+  { team: "Philadelphia Phillies", league: "MLB", sport: "Baseball", confidence: 65, aliases: ["philadelphia", "philadelphia phillies", "phillies"] },
+  { team: "Toronto Blue Jays", league: "MLB", sport: "Baseball", confidence: 65, aliases: ["toronto", "toronto blue jays", "blue jays"] },
+  { team: "New York Mets", league: "MLB", sport: "Baseball", confidence: 95, aliases: ["new york m", "ny m", "nym", "mets", "new york mets"] },
+  { team: "Milwaukee Brewers", league: "MLB", sport: "Baseball", confidence: 65, aliases: ["milwaukee", "milwaukee brewers", "brewers"] },
+  { team: "Houston Astros", league: "MLB", sport: "Baseball", confidence: 65, aliases: ["houston", "houston astros", "astros"] },
+  { team: "New York Yankees", league: "MLB", sport: "Baseball", confidence: 95, aliases: ["new york y", "ny y", "nyy", "yankees", "new york yankees"] },
+  { team: "San Francisco Giants", league: "MLB", sport: "Baseball", confidence: 65, aliases: ["san francisco", "san francisco giants", "giants"] },
+  { team: "Los Angeles Dodgers", league: "MLB", sport: "Baseball", confidence: 95, aliases: ["los angeles d", "la d", "lad", "dodgers", "los angeles dodgers"] },
+  { team: "Chicago Cubs", league: "MLB", sport: "Baseball", confidence: 95, aliases: ["chicago c", "chc", "cubs", "chicago cubs"] },
+  { team: "Athletics", league: "MLB", sport: "Baseball", confidence: 95, aliases: ["a's", "as", "athletics", "oakland athletics", "oakland a's", "sacramento athletics"] },
+  { team: "Seattle Mariners", league: "MLB", sport: "Baseball", confidence: 65, aliases: ["seattle", "seattle mariners", "mariners"] },
+  { team: "Atlanta Braves", league: "MLB", sport: "Baseball", confidence: 65, aliases: ["atlanta", "atlanta braves", "braves"] },
+  { team: "Boston Red Sox", league: "MLB", sport: "Baseball", confidence: 95, aliases: ["boston r", "red sox", "boston red sox"] },
+  { team: "Chicago White Sox", league: "MLB", sport: "Baseball", confidence: 95, aliases: ["chicago w", "chw", "white sox", "chicago white sox"] },
+  { team: "Los Angeles Angels", league: "MLB", sport: "Baseball", confidence: 95, aliases: ["los angeles a", "la a", "laa", "angels", "los angeles angels"] },
+  { team: "Texas Rangers", league: "MLB", sport: "Baseball", confidence: 80, aliases: ["texas rangers", "rangers"] },
+  { team: "Lakers", league: "NBA", sport: "Basketball", confidence: 95, aliases: ["lakers", "los angeles lakers"] },
+  { team: "Celtics", league: "NBA", sport: "Basketball", confidence: 95, aliases: ["celtics", "boston celtics"] },
+  { team: "Knicks", league: "NBA", sport: "Basketball", confidence: 95, aliases: ["knicks", "new york knicks"] },
+  { team: "Warriors", league: "NBA", sport: "Basketball", confidence: 90, aliases: ["warriors", "golden state warriors"] },
+  { team: "Chiefs", league: "NFL", sport: "Football", confidence: 95, aliases: ["chiefs", "kansas city chiefs"] },
+  { team: "Eagles", league: "NFL", sport: "Football", confidence: 90, aliases: ["eagles", "philadelphia eagles"] },
+  { team: "Cowboys", league: "NFL", sport: "Football", confidence: 95, aliases: ["cowboys", "dallas cowboys"] },
+  { team: "Bills", league: "NFL", sport: "Football", confidence: 95, aliases: ["bills", "buffalo bills"] },
+  { team: "Rangers", league: "NHL", sport: "Hockey", confidence: 90, aliases: ["new york rangers"] },
+  { team: "Maple Leafs", league: "NHL", sport: "Hockey", confidence: 95, aliases: ["maple leafs", "toronto maple leafs"] },
+  { team: "Canadiens", league: "NHL", sport: "Hockey", confidence: 95, aliases: ["canadiens", "montreal canadiens"] },
+  { team: "Bruins", league: "NHL", sport: "Hockey", confidence: 95, aliases: ["bruins", "boston bruins"] },
+];
+
 function detectLeagueFromTicker(corpus: string) {
   const tokens = corpus
     .toUpperCase()
@@ -1548,6 +1629,14 @@ function hasSportsTickerSignal(corpus: string) {
   return /\bKX(?:SPORTS?|NFL|NCAAF|CFB|NBA|WNBA|NCAAB|CBB|MLB|NHL|MLS|EPL|UCL|UFC|MMA|PGA|GOLF|TENNIS|ATP|WTA|NASCAR|F1|ESPORTS?)\b/i.test(corpus);
 }
 
+function hasKalshiSportsFamilyTickerSignal(corpus: string) {
+  return /\b(?:KX)?MVESPORTS[A-Z0-9-]*|\bSPORTSMULTIGAME[A-Z0-9-]*|\bMULTIGAMEEXTENDED\b/i.test(corpus);
+}
+
+function hasKalshiCrossCategoryTickerSignal(corpus: string) {
+  return /\b(?:KX)?MVECROSSCATEGORY[A-Z0-9-]*|\bCROSSCATEGORY\b/i.test(corpus);
+}
+
 function sportsClassificationConfidence(input: {
   isSports: boolean;
   metadataSource: boolean;
@@ -1571,6 +1660,7 @@ function sportsClassificationConfidence(input: {
 function detectMarketType(corpus: string, ...records: JsonRecord[]) {
   const explicit = rawTextFromRecords(records, ["market_type", "type", "market_kind"]);
   if (explicit && explicit.toLowerCase() !== "binary") return titleCase(explicit);
+  if (hasKalshiSportsFamilyTickerSignal(corpus) || hasKalshiCrossCategoryTickerSignal(corpus) || /\bexotics?\b/i.test(corpus)) return "Multi-game exotic";
   if (/\b(spread|cover)\b/i.test(corpus)) return "Spread";
   if (/\b(total|over\/under|over|under|points|runs|goals)\b/i.test(corpus)) return "Total";
   if (/\b(player|yards|rebounds|assists|touchdowns|home runs|strikeouts)\b/i.test(corpus)) return "Player prop";
@@ -1579,7 +1669,74 @@ function detectMarketType(corpus: string, ...records: JsonRecord[]) {
   return "Other";
 }
 
-function extractTeams(market: MarketForClassification, event: EventForClassification, ...records: JsonRecord[]) {
+function detectSportsTeamAliases(values: Array<string | null | undefined>): TeamAliasMatch[] {
+  const candidates = teamAliasCandidates(values.filter(Boolean).join(" "));
+  const matches = new Map<string, TeamAliasMatch>();
+
+  for (const candidate of candidates) {
+    for (const row of SPORTS_TEAM_ALIASES) {
+      if (!row.aliases.some((alias) => normalizeTeamAlias(alias) === candidate)) continue;
+      const existing = matches.get(row.team);
+      if (!existing || row.confidence > existing.confidence) {
+        matches.set(row.team, {
+          team: row.team,
+          league: row.league,
+          sport: row.sport,
+          confidence: row.confidence,
+        });
+      }
+    }
+  }
+
+  return Array.from(matches.values()).sort((left, right) => right.confidence - left.confidence);
+}
+
+function inferLeagueFromTeamAliases(matches: TeamAliasMatch[]) {
+  const highConfidence = matches.find((match) => match.confidence >= 90);
+  if (highConfidence) return highConfidence.league;
+
+  const teamsByLeague = new Map<string, Set<string>>();
+  for (const match of matches) {
+    const teams = teamsByLeague.get(match.league) ?? new Set<string>();
+    teams.add(match.team);
+    teamsByLeague.set(match.league, teams);
+  }
+
+  const ranked = Array.from(teamsByLeague.entries()).sort((left, right) => right[1].size - left[1].size);
+  const [leader, runnerUp] = ranked;
+  if (!leader || leader[1].size < 2) return null;
+  if (runnerUp && runnerUp[1].size === leader[1].size) return null;
+  return leader[0];
+}
+
+function teamAliasCandidates(text: string) {
+  const candidates = new Set<string>();
+  const titleLikeText = text.replace(/\b(?:yes|no)\s+/gi, ", ");
+  const segments = titleLikeText.split(/[,;|]|\s+vs\.?\s+|\s+v\.?\s+|\s+at\s+|\s+@\s+/i);
+
+  for (const segment of segments) {
+    const cleaned = normalizeTeamAlias(
+      segment
+        .replace(/\b(?:yes|no|will|the)\b/gi, " ")
+        .replace(/\s+(?:game|match|team|market)$/i, " "),
+    );
+    if (cleaned) candidates.add(cleaned);
+  }
+
+  return candidates;
+}
+
+function normalizeTeamAlias(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/['.]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function extractTeams(market: MarketForClassification, event: EventForClassification, teamMatches: TeamAliasMatch[], ...records: JsonRecord[]) {
   const teamKeys = [
     "home_team",
     "away_team",
@@ -1600,6 +1757,9 @@ function extractTeams(market: MarketForClassification, event: EventForClassifica
     ...records.flatMap((record) => rawStringValues(record, teamKeys)),
   ]).slice(0, 4);
   if (explicitTeams.length) return explicitTeams;
+
+  const matchedTeams = uniqueStrings(teamMatches.map((match) => match.team)).slice(0, 8);
+  if (matchedTeams.length) return matchedTeams;
 
   const title = [market.title, market.subtitle, event?.title].filter(Boolean).join(" ");
   const match = title.match(/([A-Z][A-Za-z0-9 .&'-]{2,})\s+(?:vs\.?|v\.?|at|@)\s+([A-Z][A-Za-z0-9 .&'-]{2,})/);
