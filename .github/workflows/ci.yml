@@ -43,4 +43,4 @@ jobs:
 
       - name: Secret scan
         run: |
-          git grep -n -I -E -e "-----BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY-----|postgres://[^[:space:]]+" -- . ':!docs/**' ':!README.md' && exit 1 || exit 0
+          git grep -n -I -E -e "-----BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY-----|postgres://[^[:space:]]+" -- . ':!docs/**' ':!README.md' ':!.github/workflows/ci.yml' && exit 1 || exit 0
